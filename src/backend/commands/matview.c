@@ -24,6 +24,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
+#include "cdb/cdbvars.h"
 #include "commands/cluster.h"
 #include "commands/matview.h"
 #include "commands/tablecmds.h"
@@ -47,6 +48,8 @@ typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
 	Oid			transientoid;	/* OID of new heap into which to store */
+	Oid			oldreloid;
+	bool		concurrent;
 	/* These fields are filled by transientrel_startup: */
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
@@ -56,12 +59,13 @@ typedef struct
 
 static int	matview_maintenance_depth = 0;
 
+static RefreshClause* MakeRefreshClause(bool concurrent, bool skipData, RangeVar *relation);
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static void transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void transientrel_shutdown(DestReceiver *self);
 static void transientrel_destroy(DestReceiver *self);
 static void refresh_matview_datafill(DestReceiver *dest, Query *query,
-						 const char *queryString);
+						 const char *queryString,RefreshClause *refreshClause);
 static char *make_temptable_name_n(char *tempname, int n);
 static void refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 						 int save_sec_context);
@@ -112,6 +116,19 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
 	CommandCounterIncrement();
 }
 
+static RefreshClause*
+MakeRefreshClause(bool concurrent, bool skipData, RangeVar *relation)
+{
+	RefreshClause *refreshClause;
+	refreshClause = makeNode(RefreshClause);
+
+	refreshClause->concurrent = concurrent;
+	refreshClause->skipData = skipData;
+	refreshClause->relation = relation;
+
+	return refreshClause;
+}
+
 /*
  * ExecRefreshMatView -- execute a REFRESH MATERIALIZED VIEW command
  *
@@ -152,6 +169,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	int			save_sec_context;
 	int			save_nestlevel;
 	ObjectAddress address;
+	RefreshClause *refreshClause;
 
 	/* MATERIALIZED_VIEW_FIXME: Refresh MatView is not MPP-fied. */
 
@@ -216,12 +234,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 			 "the rule for materialized view \"%s\" is not a single action",
 			 RelationGetRelationName(matviewRel));
 
-	/*
-	 * The stored query was rewritten at the time of the MV definition, but
-	 * has not been scribbled on by the planner.
-	 */
-	dataQuery = (Query *) linitial(actions);
-	Assert(IsA(dataQuery, Query));
 
 	/*
 	 * Check for active uses of the relation in the current transaction, such
@@ -237,6 +249,15 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * if we fail later).
 	 */
 	SetMatViewPopulatedState(matviewRel, !stmt->skipData);
+
+	/*
+	 * The stored query was rewritten at the time of the MV definition, but
+	 * has not been scribbled on by the planner.
+	 */
+	dataQuery = (Query *) linitial(actions);
+	Assert(IsA(dataQuery, Query));
+
+	dataQuery->parentStmtType = PARENTSTMTTYPE_REFRESH_MATVIEW;
 
 	relowner = matviewRel->rd_rel->relowner;
 
@@ -269,9 +290,9 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * will be gone).
 	 */
 	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
-							   ExclusiveLock, false);
+							   ExclusiveLock, false, true);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
-	dest = CreateTransientRelDestReceiver(OIDNewHeap);
+	dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent);
 
 	/*
 	 * Now lock down security-restricted operations.
@@ -279,9 +300,11 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
+	refreshClause = MakeRefreshClause(concurrent, stmt->skipData, stmt->relation);
+
 	/* Generate the data, if wanted. */
 	if (!stmt->skipData)
-		refresh_matview_datafill(dest, dataQuery, queryString);
+		refresh_matview_datafill(dest, dataQuery, queryString, refreshClause);
 
 	heap_close(matviewRel, NoLock);
 
@@ -322,7 +345,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
  */
 static void
 refresh_matview_datafill(DestReceiver *dest, Query *query,
-						 const char *queryString)
+						 const char *queryString, RefreshClause *refreshClause)
 {
 	List	   *rewritten;
 	PlannedStmt *plan;
@@ -344,6 +367,8 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 
 	/* Plan the query which will generate data for the refresh. */
 	plan = pg_plan_query(query, 0, NULL);
+
+	plan->refreshClause = refreshClause;
 
 	/*
 	 * Use a snapshot with an updated command ID to ensure this query sees
@@ -375,7 +400,7 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 }
 
 DestReceiver *
-CreateTransientRelDestReceiver(Oid transientoid)
+CreateTransientRelDestReceiver(Oid transientoid, Oid oldreloid, bool concurrent)
 {
 	DR_transientrel *self = (DR_transientrel *) palloc0(sizeof(DR_transientrel));
 
@@ -385,8 +410,60 @@ CreateTransientRelDestReceiver(Oid transientoid)
 	self->pub.rDestroy = transientrel_destroy;
 	self->pub.mydest = DestTransientRel;
 	self->transientoid = transientoid;
+	self->oldreloid = oldreloid;
+	self->concurrent = concurrent;
 
 	return (DestReceiver *) self;
+}
+
+void
+transientrel_init(QueryDesc *queryDesc)
+{
+	Oid			matviewOid;
+	Relation	matviewRel;
+	Oid			tableSpace;
+	Oid			OIDNewHeap;
+	bool		concurrent;
+	LOCKMODE	lockmode;
+	RefreshClause *refreshClause;
+
+	refreshClause = queryDesc->plannedstmt->refreshClause;
+	/* Determine strength of lock needed. */
+	concurrent = refreshClause->concurrent;
+	lockmode = concurrent ? ExclusiveLock : AccessExclusiveLock;
+
+	/*
+	 * Get a lock until end of transaction.
+	 */
+	matviewOid = RangeVarGetRelidExtended(refreshClause->relation,
+										  lockmode, false, false,
+										  RangeVarCallbackOwnsTable, NULL);
+	matviewRel = heap_open(matviewOid, NoLock);
+
+	/*
+	 * Tentatively mark the matview as populated or not (this will roll back
+	 * if we fail later).
+	 */
+	SetMatViewPopulatedState(matviewRel, !refreshClause->skipData);
+
+	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
+	if (concurrent)
+		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+	else
+		tableSpace = matviewRel->rd_rel->reltablespace;
+
+	/*
+	 * Create the transient table that will receive the regenerated data. Lock
+	 * it against access by any other process until commit (by which time it
+	 * will be gone).
+	 */
+	OIDNewHeap = make_new_heap(matviewOid, tableSpace, concurrent,
+							   ExclusiveLock, false, false);
+	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
+
+	queryDesc->dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent);
+
+	heap_close(matviewRel, NoLock);
 }
 
 /*
@@ -460,7 +537,10 @@ transientrel_shutdown(DestReceiver *self)
 
 	/* close transientrel, but keep lock until commit */
 	heap_close(myState->transientrel, NoLock);
+
 	myState->transientrel = NULL;
+	if (Gp_role == GP_ROLE_EXECUTE && !myState->concurrent)
+		refresh_by_heap_swap(myState->oldreloid, myState->transientoid);
 }
 
 /*
@@ -574,7 +654,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "(SELECT 1 FROM %s newdata2 WHERE newdata2 IS NOT NULL "
 					 "AND newdata2 OPERATOR(pg_catalog.*=) newdata "
 					 "AND newdata2.ctid OPERATOR(pg_catalog.<>) "
-					 "newdata.ctid)",
+					 "newdata.ctid and newdata2.gp_segment_id = "
+					 "newdata.gp_segment_id)",
 					 tempname, tempname);
 	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
@@ -601,8 +682,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Start building the query for creating the diff table. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "CREATE TEMP TABLE %s AS "
-					 "SELECT mv.ctid AS tid, newdata "
+					 "CREATE TABLE %s AS "
+					 "SELECT mv.ctid AS tid, mv.gp_segment_id as sid, newdata "
 					 "FROM %s mv FULL JOIN %s newdata ON (",
 					 diffname, matviewname, tempname);
 
@@ -751,10 +832,10 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Deletes must come before inserts; do them first. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-				   "DELETE FROM %s mv WHERE ctid OPERATOR(pg_catalog.=) ANY "
+				   "DELETE FROM %s mv WHERE exists "
 					 "(SELECT diff.tid FROM %s diff "
-					 "WHERE diff.tid IS NOT NULL "
-					 "AND diff.newdata IS NULL)",
+					 "WHERE diff.tid = mv.ctid and diff.sid = mv.gp_segment_id and"
+	 				 " diff.tid IS NOT NULL and diff.newdata IS NULL)",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
@@ -862,7 +943,10 @@ is_usable_unique_index(Relation indexRel)
 bool
 MatViewIncrementalMaintenanceIsEnabled(void)
 {
-	return matview_maintenance_depth > 0;
+	if (Gp_role == GP_ROLE_DISPATCH)
+		return matview_maintenance_depth > 0;
+	else
+		return true;
 }
 
 static void

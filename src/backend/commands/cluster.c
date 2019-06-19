@@ -640,7 +640,8 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 	OIDNewHeap = make_new_heap(tableOid, tableSpace,
 							   relpersistence,
 							   AccessExclusiveLock,
-							   true /* createAoBlockDirectory */);
+							   true /* createAoBlockDirectory */,
+							   false);
 
 	/* Copy the heap data into the new table in the desired order */
 	copy_heap_data(OIDNewHeap, tableOid, indexOid, verbose,
@@ -672,7 +673,8 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 Oid
 make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 			  LOCKMODE lockmode,
-			  bool createAoBlockDirectory)
+			  bool createAoBlockDirectory,
+			  bool makeCdbPolicy)
 {
 	TupleDesc	OldHeapDesc;
 	char		NewHeapName[NAMEDATALEN];
@@ -685,6 +687,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 	Oid			namespaceid;
 	bool		is_part_child;
 	bool		is_part_parent;
+	GpPolicy   *policy;
 
 	OldHeap = heap_open(OIDOldHeap, lockmode);
 	OldHeapDesc = RelationGetDescr(OldHeap);
@@ -757,7 +760,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 										  true,
 										  0,
 										  ONCOMMIT_NOOP,
-                                          NULL,                         /*CDB*/
+										  makeCdbPolicy? OldHeap->rd_cdbpolicy: NULL,/*CDB*/
 										  reloptions,
 										  false,
 										  true,

@@ -89,8 +89,7 @@ SELECT * FROM tvm;
 
 CREATE MATERIALIZED VIEW tmm AS SELECT sum(totamt) AS grandtot FROM tm;
 CREATE MATERIALIZED VIEW tvmm AS SELECT sum(totamt) AS grandtot FROM tvm;
-CREATE UNIQUE INDEX tvmm_expr ON tvmm ((grandtot > 0));
-CREATE UNIQUE INDEX tvmm_pred ON tvmm (grandtot) WHERE grandtot < 0;
+CREATE UNIQUE INDEX tvmm_expr ON tvmm (grandtot);
 CREATE VIEW tvv AS SELECT sum(totamt) AS grandtot FROM tv;
 EXPLAIN (costs off)
   CREATE MATERIALIZED VIEW tvvm AS SELECT * FROM tvv;
@@ -177,8 +176,7 @@ ALTER MATERIALIZED VIEW tvm SET SCHEMA mvschema;
 ----------+---------+-----------+---------+--------------+-------------
  grandtot | numeric |           | main    |              | 
 Indexes:
-    "tvmm_expr" UNIQUE, btree ((grandtot > 0::numeric))
-    "tvmm_pred" UNIQUE, btree (grandtot) WHERE grandtot < 0::numeric
+    "tvmm_expr" UNIQUE, btree (grandtot)
 View definition:
  SELECT sum(tvm.totamt) AS grandtot
    FROM mvschema.tvm;
@@ -239,11 +237,12 @@ RESET search_path;
 -- confirm pre- and post-refresh contents of nested materialized views
 EXPLAIN (costs off)
   SELECT * FROM tmm;
-            QUERY PLAN             
------------------------------------
- Seq Scan on tmm
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on tmm
  Optimizer: Postgres query optimizer
-(2 rows)
+(3 rows)
 
 EXPLAIN (costs off)
   SELECT * FROM tvmm;
@@ -283,17 +282,16 @@ SELECT * FROM tvvm;
 
 REFRESH MATERIALIZED VIEW tmm;
 REFRESH MATERIALIZED VIEW CONCURRENTLY tvmm;
-ERROR:  cannot refresh materialized view "public.tvmm" concurrently
-HINT:  Create a unique index with no WHERE clause on one or more columns of the materialized view.
 REFRESH MATERIALIZED VIEW tvmm;
 REFRESH MATERIALIZED VIEW tvvm;
 EXPLAIN (costs off)
   SELECT * FROM tmm;
-            QUERY PLAN             
------------------------------------
- Seq Scan on tmm
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on tmm
  Optimizer: Postgres query optimizer
-(2 rows)
+(3 rows)
 
 EXPLAIN (costs off)
   SELECT * FROM tvmm;
@@ -442,8 +440,6 @@ NOTICE:  drop cascades to materialized view mv
 CREATE TABLE foo(a, b, c) AS VALUES(1, 2, 3);
 CREATE MATERIALIZED VIEW mv AS SELECT * FROM foo;
 CREATE UNIQUE INDEX ON mv (a);
-CREATE UNIQUE INDEX ON mv (b);
-CREATE UNIQUE INDEX on mv (c);
 INSERT INTO foo VALUES(2, 3, 4);
 INSERT INTO foo VALUES(3, 4, 5);
 REFRESH MATERIALIZED VIEW mv;
@@ -535,9 +531,7 @@ drop cascades to materialized view mvtest_mv_v_4
 create materialized view mvtest_error as select 1/0 as x;  -- fail
 ERROR:  division by zero
 create materialized view mvtest_error as select 1/0 as x with no data;
-refresh materialized view mvtest_error;  -- fail here
 ERROR:  division by zero
-drop materialized view mvtest_error;
 -- make sure that matview rows can be referenced as source rows (bug #9398)
 CREATE TABLE v AS SELECT generate_series(1,10) AS a;
 CREATE MATERIALIZED VIEW mv_v AS SELECT a FROM v WHERE a <= 5;
@@ -590,6 +584,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 SELECT mvtest_func();
+PL/pgSQL function mvtest_func() line 3 at SQL statement
+PL/pgSQL function mvtest_func() line 4 at SQL statement
  mvtest_func 
 -------------
  

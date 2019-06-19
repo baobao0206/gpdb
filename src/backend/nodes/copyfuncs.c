@@ -133,6 +133,7 @@ _copyPlannedStmt(const PlannedStmt *from)
 
 	COPY_NODE_FIELD(intoClause);
 	COPY_NODE_FIELD(copyIntoClause);
+	COPY_NODE_FIELD(refreshClause);
 	COPY_SCALAR_FIELD(metricsQueryType);
 
 	return newnode;
@@ -1557,6 +1558,18 @@ _copyCopyIntoClause(const CopyIntoClause *from)
 	COPY_NODE_FIELD(ao_segnos);
 
 	return newnode;
+}
+
+/*
+ * _copyRefreshClause
+ */
+static RefreshClause *
+_copyRefreshClause(const RefreshClause *from)
+{
+	RefreshClause *newnode = makeNode(RefreshClause);
+
+	COPY_SCALAR_FIELD(concurrent);
+	COPY_NODE_FIELD(relation);
 }
 
 /*
@@ -5535,6 +5548,9 @@ copyObject(const void *from)
 			break;
 		case T_CopyIntoClause:
 			retval = _copyCopyIntoClause(from);
+			break;
+		case T_RefreshClause:
+			retval = _copyRefreshClause(from);
 			break;
 		case T_Var:
 			retval = _copyVar(from);

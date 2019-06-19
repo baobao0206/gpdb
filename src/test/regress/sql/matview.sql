@@ -29,8 +29,7 @@ CREATE MATERIALIZED VIEW tvm AS SELECT * FROM tv ORDER BY type;
 SELECT * FROM tvm;
 CREATE MATERIALIZED VIEW tmm AS SELECT sum(totamt) AS grandtot FROM tm;
 CREATE MATERIALIZED VIEW tvmm AS SELECT sum(totamt) AS grandtot FROM tvm;
-CREATE UNIQUE INDEX tvmm_expr ON tvmm ((grandtot > 0));
-CREATE UNIQUE INDEX tvmm_pred ON tvmm (grandtot) WHERE grandtot < 0;
+CREATE UNIQUE INDEX tvmm_expr ON tvmm (grandtot);
 CREATE VIEW tvv AS SELECT sum(totamt) AS grandtot FROM tv;
 EXPLAIN (costs off)
   CREATE MATERIALIZED VIEW tvvm AS SELECT * FROM tvv;
@@ -135,8 +134,6 @@ DROP TABLE foo CASCADE;
 CREATE TABLE foo(a, b, c) AS VALUES(1, 2, 3);
 CREATE MATERIALIZED VIEW mv AS SELECT * FROM foo;
 CREATE UNIQUE INDEX ON mv (a);
-CREATE UNIQUE INDEX ON mv (b);
-CREATE UNIQUE INDEX on mv (c);
 INSERT INTO foo VALUES(2, 3, 4);
 INSERT INTO foo VALUES(3, 4, 5);
 REFRESH MATERIALIZED VIEW mv;
@@ -189,8 +186,6 @@ DROP TABLE mvtest_v CASCADE;
 -- make sure that create WITH NO DATA does not plan the query (bug #13907)
 create materialized view mvtest_error as select 1/0 as x;  -- fail
 create materialized view mvtest_error as select 1/0 as x with no data;
-refresh materialized view mvtest_error;  -- fail here
-drop materialized view mvtest_error;
 
 -- make sure that matview rows can be referenced as source rows (bug #9398)
 CREATE TABLE v AS SELECT generate_series(1,10) AS a;

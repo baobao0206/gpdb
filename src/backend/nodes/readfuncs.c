@@ -725,6 +725,17 @@ _readCopyIntoClause(void)
 	READ_DONE();
 }
 
+static RefreshClause *
+_readRefreshClause(void)
+{
+	READ_LOCALS(RefreshClause);
+
+	READ_BOOL_FIELD(concurrent);
+	READ_NODE_FIELD(relation);
+
+	READ_DONE();
+}
+
 /*
  * _readVar
  */
