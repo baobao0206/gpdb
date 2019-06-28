@@ -302,6 +302,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	refreshClause = MakeRefreshClause(concurrent, stmt->skipData, stmt->relation);
 
+	dataQuery->intoPolicy = matviewRel->rd_cdbpolicy;
 	/* Generate the data, if wanted. */
 	if (!stmt->skipData)
 		refresh_matview_datafill(dest, dataQuery, queryString, refreshClause);
