@@ -620,6 +620,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	ListCell   *indexoidscan;
 	int16		relnatts;
 	Oid		   *opUsedForQual;
+	char 	   *distributed;
 
 	initStringInfo(&querybuf);
 	matviewRel = heap_open(matviewOid, NoLock);
@@ -680,11 +681,29 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
-	/* Start building the query for creating the diff table. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
+					"select pg_catalog.pg_get_table_distributedby('%d')",
+					matviewOid);
+	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+
+	if (SPI_processed > 0)
+	{
+		TupleDesc	spi_tupdesc = SPI_tuptable->tupdesc;
+		HeapTuple	spi_tuple = SPI_tuptable->vals[0];
+		distributed = SPI_getvalue(spi_tuple, spi_tupdesc, 1);
+	}
+	else
+		distributed = "";
+
+	/* Start building the query for creating the diff table. */
+	resetStringInfo(&querybuf);
+
+	appendStringInfo(&querybuf,
 					 "CREATE TABLE %s AS "
-					 "SELECT mv.ctid AS tid, mv.gp_segment_id as sid, newdata "
+					 "SELECT mv.ctid AS tid, mv.gp_segment_id as sid, newdata.* "
 					 "FROM %s mv FULL JOIN %s newdata ON (",
 					 diffname, matviewname, tempname);
 
@@ -805,10 +824,13 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					  matviewname),
 				 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
 
+
+
 	appendStringInfoString(&querybuf,
 						   " AND newdata OPERATOR(pg_catalog.*=) mv) "
 						   "WHERE newdata IS NULL OR mv IS NULL "
-						   "ORDER BY tid");
+						   "ORDER BY tid ");
+	appendStringInfoString(&querybuf, distributed);
 
 	/* Create the temporary "diff" table. */
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
@@ -833,20 +855,28 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Deletes must come before inserts; do them first. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-				   "DELETE FROM %s mv WHERE exists "
+					 "DELETE FROM %s mv WHERE exists "
 					 "(SELECT diff.tid FROM %s diff "
 					 "WHERE diff.tid = mv.ctid and diff.sid = mv.gp_segment_id and"
-	 				 " diff.tid IS NOT NULL and diff.newdata IS NULL)",
+	 				 " diff.tid IS NOT NULL)",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* Inserts go last. */
 	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf, "INSERT INTO %s SELECT", matviewname);
+	for (int i = 0; i < tupdesc->natts; ++i)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+		if (i == tupdesc->natts - 1)
+			appendStringInfo(&querybuf, " %s", NameStr(attr->attname));
+		else
+			appendStringInfo(&querybuf, " %s,", NameStr(attr->attname));
+	}
 	appendStringInfo(&querybuf,
-					 "INSERT INTO %s SELECT (diff.newdata).* "
-					 "FROM %s diff WHERE tid IS NULL",
-					 matviewname, diffname);
+					 " FROM %s diff WHERE tid IS NULL",
+					 diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
