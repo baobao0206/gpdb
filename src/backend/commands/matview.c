@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/appendonlywriter.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/xact.h"
@@ -24,6 +25,8 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
+#include "cdb/cdbaocsam.h"
+#include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbvars.h"
 #include "commands/cluster.h"
 #include "commands/matview.h"
@@ -55,6 +58,9 @@ typedef struct
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			hi_options;		/* heap_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
+
+	struct AppendOnlyInsertDescData *ao_insertDesc; /* descriptor to AO tables */
+	struct AOCSInsertDescData *aocs_insertDes;      /* descriptor for aocs */
 } DR_transientrel;
 
 static int	matview_maintenance_depth = 0;
@@ -504,20 +510,57 @@ static void
 transientrel_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
-	HeapTuple	tuple;
 
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
 
-	heap_insert(myState->transientrel,
-				tuple,
-				myState->output_cid,
-				myState->hi_options,
-				myState->bistate,
-				GetCurrentTransactionId());
+	if (RelationIsAoRows(myState->transientrel))
+	{
+		AOTupleId	aoTupleId;
+		MemTuple	tuple;
+
+		tuple = ExecCopySlotMemTuple(slot);
+		if (myState->ao_insertDesc == NULL)
+			myState->ao_insertDesc = appendonly_insert_init(myState->transientrel, RESERVED_SEGNO, false);
+
+		appendonly_insert(myState->ao_insertDesc, tuple, InvalidOid, &aoTupleId);
+		pfree(tuple);
+	}
+	else if (RelationIsAoCols(myState->transientrel))
+	{
+		if(myState->aocs_insertDes == NULL)
+			myState->aocs_insertDes = aocs_insert_init(myState->transientrel, RESERVED_SEGNO, false);
+
+		aocs_insert(myState->aocs_insertDes, slot);
+	}
+	else
+	{
+		HeapTuple	tuple;
+
+		/*
+		 * get the heap tuple out of the tuple table slot, making sure we have a
+		 * writable copy
+		 */
+		tuple = ExecMaterializeSlot(slot);
+
+		/*
+		 * force assignment of new OID (see comments in ExecInsert)
+		 */
+		if (myState->transientrel->rd_rel->relhasoids)
+			HeapTupleSetOid(tuple, InvalidOid);
+
+		heap_insert(myState->transientrel,
+					tuple,
+					myState->output_cid,
+					myState->hi_options,
+					myState->bistate,
+					GetCurrentTransactionId());
+
+		/* We know this is a newly created relation, so there are no indexes */
+	}
+
 
 	/* We know this is a newly created relation, so there are no indexes */
 }
@@ -535,6 +578,11 @@ transientrel_shutdown(DestReceiver *self)
 	/* If we skipped using WAL, must heap_sync before commit */
 	if (myState->hi_options & HEAP_INSERT_SKIP_WAL)
 		heap_sync(myState->transientrel);
+
+	if (RelationIsAoRows(myState->transientrel) && myState->ao_insertDesc)
+		appendonly_insert_finish(myState->ao_insertDesc);
+	else if (RelationIsAoCols(myState->transientrel) && myState->aocs_insertDes)
+		aocs_insert_finish(myState->aocs_insertDes);
 
 	/* close transientrel, but keep lock until commit */
 	heap_close(myState->transientrel, NoLock);
