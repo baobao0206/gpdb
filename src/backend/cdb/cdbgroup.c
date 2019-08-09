@@ -2241,7 +2241,7 @@ make_plan_for_one_dqa(PlannerInfo *root, MppGroupContext *ctx, int dqa_index,
 										   0,	/* input_grouping */
 										   0,	/* grouping */
 										   0,	/* rollup_gs_times */
-										   dqaArg->num_rows,
+										   dqaArg->num_rows / planner_segment_count(NULL),
 										   ctx->agg_costs,
 										   "partial_aggregation",
 										   &current_pathkeys,
@@ -2318,7 +2318,7 @@ make_plan_for_one_dqa(PlannerInfo *root, MppGroupContext *ctx, int dqa_index,
 									   0,	/* input_grouping */
 									   ctx->grouping,
 									   0,	/* rollup_gs_times */
-									   *ctx->p_dNumGroups,
+									   *ctx->p_dNumGroups / planner_segment_count(NULL),
 									   ctx->agg_costs,
 									   "partial_aggregation",
 									   &current_pathkeys,
@@ -5442,18 +5442,29 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 												   ctx->numGroupCols);
 	Cost		sort_groups = incremental_sort_cost(group_rows, input_width,
 													ctx->numGroupCols);
-	Cost		gagg_input = incremental_agg_cost(input_rows, input_width,
-												  AGG_SORTED, ctx->numGroupCols + 1,
-												  numGroups, ctx->agg_costs);
-	Cost		gagg_dargs = incremental_agg_cost(darg_rows, input_width,
-												  AGG_SORTED, ctx->numGroupCols,
-												  numGroups, ctx->agg_costs);
-	Cost		hagg_input = incremental_agg_cost(input_rows, input_width,
-												  AGG_HASHED, ctx->numGroupCols + 1,
-												  numGroups, ctx->agg_costs);
-	Cost		hagg_dargs = incremental_agg_cost(darg_rows, input_width,
-												  AGG_HASHED, ctx->numGroupCols,
-												  numGroups, ctx->agg_costs);
+
+	Cost		gagg_1phase = incremental_agg_cost(input_rows, input_width,
+												   AGG_SORTED, ctx->numGroupCols + 1,
+												   darg_rows, ctx->agg_costs);
+	Cost		gagg_2phase = incremental_agg_cost(input_rows, input_width,
+												   AGG_SORTED, ctx->numGroupCols + 1,
+												   darg_rows / planner_segment_count(NULL),
+												   ctx->agg_costs);
+	Cost		gagg_3phase = incremental_agg_cost(darg_rows, input_width,
+												   AGG_SORTED, ctx->numGroupCols,
+												   numGroups, ctx->agg_costs);
+
+	Cost		hagg_1phase = incremental_agg_cost(input_rows, input_width,
+												   AGG_HASHED, ctx->numGroupCols + 1,
+												   darg_rows, ctx->agg_costs);
+	Cost		hagg_2phase = incremental_agg_cost(input_rows, input_width,
+												   AGG_HASHED, ctx->numGroupCols + 1,
+												   darg_rows / planner_segment_count(NULL),
+												   ctx->agg_costs);
+	Cost		hagg_3phase = incremental_agg_cost(darg_rows, input_width,
+												   AGG_HASHED, ctx->numGroupCols,
+												   numGroups, ctx->agg_costs);
+
 	Cost		cost_base;
 	Cost		cost_sorted;
 	Cost		cost_cheapest;
@@ -5466,11 +5477,11 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 		&& can_hash_dqa_arg;
 	if (use_hashed_preliminary)
 	{
-		cost_base = hagg_input;
+		cost_base = hagg_1phase;
 	}
 	else
 	{
-		cost_base = sort_input + gagg_input;
+		cost_base = sort_input + gagg_1phase;
 	}
 
 	/* Collocating motion */
@@ -5485,9 +5496,9 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 													  1, ctx->agg_costs);
 
 		type_sorted = type_cheapest = DQACOPLAN_PGS;
-		cost_sorted = cost_cheapest = sort_input + gagg_input + pagg_dargs;
+		cost_sorted = cost_cheapest = sort_input + gagg_2phase + pagg_dargs;
 
-		trial = hagg_input + pagg_dargs;
+		trial = hagg_2phase + pagg_dargs;
 		if (trial < cost_cheapest)
 		{
 			cost_cheapest = trial;
@@ -5497,11 +5508,11 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 	else						/* vector agg */
 	{
 		type_sorted = type_cheapest = DQACOPLAN_GGS;
-		cost_sorted = cost_cheapest = sort_input + gagg_input + gagg_dargs;
+		cost_sorted = cost_cheapest = sort_input + gagg_2phase + gagg_3phase;
 
 		if (can_hash_dqa_arg)
 		{
-			trial = hagg_input + sort_dargs + gagg_input;
+			trial = hagg_2phase + sort_dargs + gagg_3phase;
 
 			if (trial < cost_cheapest)
 			{
@@ -5518,7 +5529,7 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 
 		if (can_hash_group_key && can_hash_dqa_arg)
 		{
-			trial = hagg_input + hagg_dargs;
+			trial = hagg_2phase + hagg_3phase;
 
 			if (trial < cost_cheapest)
 			{

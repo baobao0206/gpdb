@@ -4665,8 +4665,6 @@ double global_work_mem(PlannerInfo *root)
 	return (double) planner_work_mem * 1024L * segment_count;	
 }
 
-double segment_work_mem
-
 /* CDB -- The incremental cost functions below are for use outside the
  *        the usual optimizer (in the aggregation planner, etc.)  They
  *        are modeled on corresponding cost function, but address the
