@@ -1675,6 +1675,18 @@ cost_material(Path *path, PlannerInfo *root,
 	path->total_cost = startup_cost + run_cost;
 }
 
+double spilledGroupNumber(int hashTableCapacity, int numGroups, int rows)
+{
+	double outputRows;
+	if (hashTableCapacity >= numGroups)
+		return numGroups;
+	outputRows = (hashTableCapacity * rows) / ((log(numGroups) - log(numGroups - hashTableCapacity)) * numGroups);
+	if (outputRows < numGroups)
+		return numGroups;
+	else
+		return outputRows;
+}
+
 /*
  * cost_agg
  *		Determines and returns the cost of performing an Agg plan node,
@@ -1751,12 +1763,13 @@ cost_agg(Path *path, PlannerInfo *root,
 		total_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
 		total_cost += aggcosts->finalCost * numGroups;
 		total_cost += cpu_tuple_cost * numGroups;
-		output_tuples = numGroups;
+		output_tuples = numGroups * planner_segment_count(NULL);
 	}
 	else
 	{
 		double spilled_bytes = 0.0;
 		double spilled_groups = 0.0;
+		double hash_table_capacity = 0.0;
 
 		/* must be AGG_HASHED */
 		startup_cost = input_total_cost;
@@ -1773,7 +1786,10 @@ cost_agg(Path *path, PlannerInfo *root,
 			 * to know the exact number. Currently, we choose 0.5 of 
 			 * (input_tuples - numGroups) as additional groups to be spilled.
 			 */
-			spilled_groups = numGroups + (input_tuples - numGroups) * 0.5;
+			// spilled_groups = numGroups + (input_tuples - numGroups) * 0.5;
+
+			hash_table_capacity = planner_work_mem * 1024L / hashentry_width;
+			spilled_groups = spilledGroupNumber(hash_table_capacity, numGroups, input_tuples);
 
 			if (!hash_streaming)
 			{
@@ -1788,28 +1804,28 @@ cost_agg(Path *path, PlannerInfo *root,
 
 				/* startup gets charged the write-cost */
 				startup_cost += seq_page_cost * (spilled_bytes / BLCKSZ);
-			}
-		}
 
-		if (!hash_streaming)
-		{
-			total_cost = startup_cost;
-			total_cost += aggcosts->finalCost * numGroups;
-			total_cost += cpu_tuple_cost * numGroups;
+				output_tuples = numGroups * planner_segment_count(NULL);;
+			}
+			else
+			{
+				output_tuples = spilled_groups;
+			}
 		}
 		else
 		{
-			total_cost = startup_cost;
-			total_cost += aggcosts->finalCost * spilled_groups;
-			total_cost += cpu_tuple_cost * spilled_groups;
+			output_tuples = numGroups * planner_segment_count(NULL);;
 		}
 
-		if (hash_batches > 2)
+		total_cost = startup_cost;
+		total_cost += aggcosts->finalCost * output_tuples;
+		total_cost += cpu_tuple_cost * output_tuples;
+
+		if (hash_batches > 2 && !hash_streaming)
 		{
 			/* total gets charged the read-cost */
 			total_cost += seq_page_cost * (spilled_bytes / BLCKSZ);
 		}
-		output_tuples = numGroups;
 	}
 
 	path->rows = output_tuples;

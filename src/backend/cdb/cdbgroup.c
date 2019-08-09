@@ -1103,7 +1103,7 @@ make_one_stage_agg_plan(PlannerInfo *root,
 										numGroupCols,
 										groupColIdx,
 										groupOperators,
-										numGroups,
+										numGroups / planner_segment_count(NULL),
 										0,	/* num_nullcols */
 										0,	/* input_grouping */
 										ctx->grouping,
@@ -1156,7 +1156,7 @@ make_one_stage_agg_plan(PlannerInfo *root,
 											numGroupCols,
 											groupColIdx,
 											groupOperators,
-											numGroups,
+											numGroups / planner_segment_count(NULL[]),
 											0,	/* num_nullcols */
 											0,	/* input_grouping */
 											ctx->grouping,
@@ -4612,7 +4612,7 @@ add_second_stage_agg(PlannerInfo *root,
 								 numGroupCols,
 								 prelimGroupColIdx,
 								 prelimGroupOperators,
-								 lNumGroups,
+								 lNumGroups / planner_segment_count(NULL)[],
 								 num_nullcols,
 								 input_grouping,
 								 grouping,
@@ -4872,7 +4872,7 @@ cost_1phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 					 ctx->sub_tlist, (List *) root->parse->havingQual,
 					 AGG_HASHED, false,
 					 ctx->numGroupCols,
-					 numGroups,
+					 numGroups / planner_segment_count(NULL),
 					 ctx->agg_costs);
 	}
 	else
@@ -4895,7 +4895,7 @@ cost_1phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 						 ctx->sub_tlist, (List *) root->parse->havingQual,
 						 AGG_SORTED, false,
 						 ctx->numGroupCols,
-						 numGroups,
+						 numGroups / planner_segment_count(NULL),
 						 ctx->agg_costs);
 		}
 
@@ -4947,7 +4947,6 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 	(*(ctx->p_dNumGroups) > LONG_MAX) ? LONG_MAX :
 	(long) *(ctx->p_dNumGroups);
 	double		input_rows;
-	double		streaming_fudge = 1.3;
 
 	cost_common_agg(root, ctx, info, &input_dummy);
 	input_rows = input_dummy.plan_rows;
@@ -4984,11 +4983,6 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 					 ctx->numGroupCols,
 					 numGroups,
 					 ctx->agg_costs);
-
-		if (gp_hashagg_streambottom)
-		{
-			input_dummy.plan_rows *= streaming_fudge;
-		}
 	}
 	else
 	{
@@ -5076,7 +5070,7 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 					 NIL, NIL,	/* Don't know tlist or qual */
 					 AGG_HASHED, false,
 					 ctx->numGroupCols,
-					 numGroups,
+					 numGroups / planner_segment_count(NULL),
 					 ctx->agg_costs);
 	}
 	else
@@ -5099,7 +5093,7 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 						 NIL, NIL,	/* Don't know tlist or qual */
 						 AGG_SORTED, false,
 						 ctx->numGroupCols,
-						 numGroups,
+						 numGroups / planner_segment_count(NULL),
 						 ctx->agg_costs);
 		}
 	}
