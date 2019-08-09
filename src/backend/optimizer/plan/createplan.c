@@ -5850,7 +5850,7 @@ add_agg_cost(PlannerInfo *root, Plan *plan,
 		entrywidth = agg_hash_entrywidth(aggcosts->numAggs,
 								   sizeof(HeapTupleData) + sizeof(HeapTupleHeaderData) + plan->plan_width,
 								   aggcosts->transitionSpace);
-		if (!calcHashAggTableSizes(global_work_mem(root),
+		if (!calcHashAggTableSizes((double) planner_work_mem * 1024L,
 								   numGroups,
 								   entrywidth,
 								   true,

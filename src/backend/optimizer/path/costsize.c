@@ -1675,7 +1675,7 @@ cost_material(Path *path, PlannerInfo *root,
 	path->total_cost = startup_cost + run_cost;
 }
 
-double spilledGroupNumber(int hashTableCapacity, int numGroups, int rows)
+double spilledGroupNumber(double hashTableCapacity, double numGroups, double rows)
 {
 	double outputRows;
 	if (hashTableCapacity >= numGroups)
@@ -4664,6 +4664,8 @@ double global_work_mem(PlannerInfo *root)
 
 	return (double) planner_work_mem * 1024L * segment_count;	
 }
+
+double segment_work_mem
 
 /* CDB -- The incremental cost functions below are for use outside the
  *        the usual optimizer (in the aggregation planner, etc.)  They
