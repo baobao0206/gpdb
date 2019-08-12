@@ -153,6 +153,7 @@ static Selectivity adjust_selectivity_for_nulltest(Selectivity selec,
 												Selectivity pselec,
 												List *pushed_quals,
 												JoinType jointype);
+static double spilledGroupNumber(double hashTableCapacity, double numGroups, double rows);
 
 /* CDB: The clamp_row_est() function definition has been moved to cost.h */
 
@@ -1675,7 +1676,8 @@ cost_material(Path *path, PlannerInfo *root,
 	path->total_cost = startup_cost + run_cost;
 }
 
-double spilledGroupNumber(double hashTableCapacity, double numGroups, double rows)
+static double
+spilledGroupNumber(double hashTableCapacity, double numGroups, double rows)
 {
 	double outputRows;
 	if (hashTableCapacity >= numGroups)
