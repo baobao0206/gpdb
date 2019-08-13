@@ -2241,7 +2241,7 @@ make_plan_for_one_dqa(PlannerInfo *root, MppGroupContext *ctx, int dqa_index,
 										   0,	/* input_grouping */
 										   0,	/* grouping */
 										   0,	/* rollup_gs_times */
-										   dqaArg->num_rows / planner_segment_count(NULL),
+										   dqaArg->num_rows,
 										   ctx->agg_costs,
 										   "partial_aggregation",
 										   &current_pathkeys,
@@ -2318,7 +2318,7 @@ make_plan_for_one_dqa(PlannerInfo *root, MppGroupContext *ctx, int dqa_index,
 									   0,	/* input_grouping */
 									   ctx->grouping,
 									   0,	/* rollup_gs_times */
-									   *ctx->p_dNumGroups / planner_segment_count(NULL),
+									   *ctx->p_dNumGroups,
 									   ctx->agg_costs,
 									   "partial_aggregation",
 									   &current_pathkeys,
@@ -5452,7 +5452,8 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 												   ctx->agg_costs);
 	Cost		gagg_3phase = incremental_agg_cost(darg_rows, input_width,
 												   AGG_SORTED, ctx->numGroupCols,
-												   numGroups, ctx->agg_costs);
+												   numGroups / planner_segment_count(NULL),
+												   ctx->agg_costs);
 
 	Cost		hagg_1phase = incremental_agg_cost(input_rows, input_width,
 												   AGG_HASHED, ctx->numGroupCols + 1,
@@ -5463,7 +5464,8 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 												   ctx->agg_costs);
 	Cost		hagg_3phase = incremental_agg_cost(darg_rows, input_width,
 												   AGG_HASHED, ctx->numGroupCols,
-												   numGroups, ctx->agg_costs);
+												   numGroups / planner_segment_count(NULL),
+												   ctx->agg_costs);
 
 	Cost		cost_base;
 	Cost		cost_sorted;
