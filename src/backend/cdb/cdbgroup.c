@@ -21,6 +21,7 @@
 #include "postgres.h"
 
 #include <limits.h>
+#include <math.h>
 
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
@@ -407,6 +408,7 @@ static Cost incremental_motion_cost(double sendrows, double recvrows);
 
 static bool contain_aggfilters(Node *node);
 static bool areAllExpressionsHashable(List *exprs);
+static double groupNumberPerSegemnt(double groupNum, double numPerGroup, double segmentNum);
 
 /*---------------------------------------------
  * WITHIN stuff
@@ -1416,7 +1418,7 @@ make_two_stage_agg_plan(PlannerInfo *root,
 										numGroupCols,
 										groupColIdx,
 										groupOperators,
-										numGroups,
+										groupNumberPerSegemnt(numGroups, result_plan->plan_rows, planner_segment_count(NULL)),
 										0,	/* num_nullcols */
 										0,	/* input_grouping */
 										0,	/* grouping */
@@ -2103,7 +2105,7 @@ make_plan_for_one_dqa(PlannerInfo *root, MppGroupContext *ctx, int dqa_index,
 									ctx->numGroupCols + 1,
 									inputGroupColIdx,
 									inputGroupOperators,
-									numGroups,
+									groupNumberPerSegemnt(numGroups, result_plan->plan_rows, planner_segment_count(NULL)),
 									0, /* num_nullcols */
 									0, /* input_grouping */
 									0, /* grouping */
@@ -4981,7 +4983,7 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 					 NIL, NIL,	/* Don't know preliminary tlist, qual IS NIL */
 					 AGG_HASHED, root->config->gp_hashagg_streambottom,
 					 ctx->numGroupCols,
-					 numGroups,
+					 groupNumberPerSegemnt(numGroups, input_rows, planner_segment_count(NULL)),
 					 ctx->agg_costs);
 	}
 	else
@@ -5009,7 +5011,7 @@ cost_2phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 									 * NIL */
 						 AGG_SORTED, false,
 						 ctx->numGroupCols,
-						 numGroups,
+						 groupNumberPerSegemnt(numGroups, input_rows, planner_segment_count(NULL)),
 						 ctx->agg_costs);
 		}
 
@@ -5431,10 +5433,14 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 	long		numGroups = (group_rows < 0) ? 0 :
 	(group_rows > LONG_MAX) ? LONG_MAX :
 	(long) group_rows;
+	double group_num_persegment_1phase;
 
 	bool can_hash_group_key = true;
 	bool can_hash_dqa_arg = true;
 	bool		use_hashed_preliminary = false;
+
+	group_num_persegment_1phase = groupNumberPerSegemnt(darg_rows, input_rows,
+														planner_segment_count(NULL));
 
 	Cost		sort_input = incremental_sort_cost(input_rows, input_width,
 												   ctx->numGroupCols + 1);
@@ -5445,7 +5451,7 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 
 	Cost		gagg_1phase = incremental_agg_cost(input_rows, input_width,
 												   AGG_SORTED, ctx->numGroupCols + 1,
-												   darg_rows, ctx->agg_costs);
+												   group_num_persegment_1phase, ctx->agg_costs);
 	Cost		gagg_2phase = incremental_agg_cost(input_rows, input_width,
 												   AGG_SORTED, ctx->numGroupCols + 1,
 												   darg_rows / planner_segment_count(NULL),
@@ -5457,7 +5463,7 @@ set_coplan_strategies(PlannerInfo *root, MppGroupContext *ctx, DqaInfo *dqaArg, 
 
 	Cost		hagg_1phase = incremental_agg_cost(input_rows, input_width,
 												   AGG_HASHED, ctx->numGroupCols + 1,
-												   darg_rows, ctx->agg_costs);
+												   group_num_persegment_1phase, ctx->agg_costs);
 	Cost		hagg_2phase = incremental_agg_cost(input_rows, input_width,
 												   AGG_HASHED, ctx->numGroupCols + 1,
 												   darg_rows / planner_segment_count(NULL),
@@ -5760,4 +5766,11 @@ areAllExpressionsHashable(List *exprs)
 			return false;
 	}
 	return true;
+}
+
+static double
+groupNumberPerSegemnt(double groupNum, double rows, double segmentNum)
+{
+	double numPerGroup = rows / groupNum;
+	return (1-pow(segmentNum-1, numPerGroup)/pow(segmentNum, numPerGroup))*groupNum;
 }
