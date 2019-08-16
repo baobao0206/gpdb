@@ -61,6 +61,7 @@
 #include "utils/tqual.h"
 #include "utils/typcache.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_statistic.h"
 
 #include "cdb/cdbllize.h"
 #include "cdb/cdbpath.h"
@@ -409,6 +410,7 @@ static Cost incremental_motion_cost(double sendrows, double recvrows);
 static bool contain_aggfilters(Node *node);
 static bool areAllExpressionsHashable(List *exprs);
 static double groupNumberPerSegemnt(double groupNum, double numPerGroup, double segmentNum);
+static double getSkewValue(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount);
 
 /*---------------------------------------------
  * WITHIN stuff
@@ -473,6 +475,7 @@ cdb_grouping_planner(PlannerInfo *root,
 	bool		has_groups = root->parse->groupClause != NIL;
 	bool		has_aggs = agg_costs->numAggs > 0;
 	bool		has_ordered_aggs = agg_costs->numPureOrderedAggs > 0;
+	double 		skew_ratio = 1.0;
 	ListCell   *lc;
 
 	bool		is_grpext = false;
@@ -891,12 +894,15 @@ cdb_grouping_planner(PlannerInfo *root,
 		}
 	}
 
+	skew_ratio = getSkewValue(root, &ctx, plan_1p.input_path->parent->rows,
+							  planner_segment_count(NULL));
 
 	plan_info = NULL;			/* Most cost-effective, feasible plan. */
 
 	if (consider_agg & AGG_1PHASE)
 	{
 		cost_1phase_aggregation(root, &ctx, &plan_1p);
+		plan_1p.plan_cost *= skew_ratio;
 		if (plan_info == NULL || plan_info->plan_cost > plan_1p.plan_cost)
 			plan_info = &plan_1p;
 	}
@@ -4929,7 +4935,6 @@ cost_1phase_aggregation(PlannerInfo *root, MppGroupContext *ctx, AggPlanInfo *in
 	info->join_strategy = DqaJoinNone;
 	info->use_sharing = false;
 
-	info->plan_cost *= gp_coefficient_1phase_agg;
 	return info->plan_cost;
 }
 
@@ -5772,5 +5777,64 @@ static double
 groupNumberPerSegemnt(double groupNum, double rows, double segmentNum)
 {
 	double numPerGroup = rows / groupNum;
-	return (1-pow(segmentNum-1, numPerGroup)/pow(segmentNum, numPerGroup))*groupNum;
+	double group_num;
+	group_num = (1-pow((segmentNum-1)/segmentNum, numPerGroup))*groupNum;
+	return group_num;
+}
+
+static double
+getSkewValue(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount)
+{
+	AttrNumber		groupColumnIndex = InvalidAttrNumber;
+	Oid				skewTable = InvalidOid;
+	AttrNumber		skewColumn = InvalidAttrNumber;
+	bool			skewInherit = false;
+	TargetEntry	   *tle;
+	HeapTupleData  *statsTuple;
+	AttStatsSlot	sslot;
+
+	if (ctx->numGroupCols != 1)
+		return 1;
+
+	groupColumnIndex = ctx->groupColIdx[0];
+	tle = get_tle_by_resno(ctx->tlist, groupColumnIndex);
+	if (IsA(tle->expr, Var))
+	{
+		Var		   *var = (Var *) tle->expr;
+		RangeTblEntry *rte;
+		rte = root->simple_rte_array[var->varno];
+		if (rte->rtekind == RTE_RELATION)
+		{
+			skewTable = rte->relid;
+			skewColumn = var->varattno;
+			skewInherit = rte->inh;
+		}
+	}
+
+	if (!OidIsValid(skewTable))
+		return 1;
+
+	statsTuple = SearchSysCache3(STATRELATTINH,
+								 ObjectIdGetDatum(skewTable),
+								 Int16GetDatum(skewColumn),
+								 BoolGetDatum(skewInherit));
+
+	if (!HeapTupleIsValid(statsTuple))
+		return 1;
+
+	if (get_attstatsslot(&sslot, statsTuple,
+						 STATISTIC_KIND_MCV, InvalidOid,
+						 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+	{
+		double top_group_tuple_num = 0.0;
+		double tuple_num_per_group = rows / *ctx->p_dNumGroups;
+		double tuple_num_per_segment = rows / segmentCount;
+		double skew_ratio = 0.0;
+		Assert(sslot.nvalues > 0);
+		top_group_tuple_num = sslot.numbers[0];
+		skew_ratio = (top_group_tuple_num * rows - tuple_num_per_group) / tuple_num_per_segment;
+		return skew_ratio + 1;
+	}
+	else
+		return 1;
 }
