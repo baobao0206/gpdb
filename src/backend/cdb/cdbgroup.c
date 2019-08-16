@@ -410,7 +410,7 @@ static Cost incremental_motion_cost(double sendrows, double recvrows);
 static bool contain_aggfilters(Node *node);
 static bool areAllExpressionsHashable(List *exprs);
 static double groupNumberPerSegemnt(double groupNum, double numPerGroup, double segmentNum);
-static double getSkewValue(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount);
+static double getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount);
 
 /*---------------------------------------------
  * WITHIN stuff
@@ -894,8 +894,9 @@ cdb_grouping_planner(PlannerInfo *root,
 		}
 	}
 
-	skew_ratio = getSkewValue(root, &ctx, plan_1p.input_path->parent->rows,
-							  planner_segment_count(NULL));
+	skew_ratio = getSkewRatio(
+			root, &ctx, plan_1p.input_path->parent->rows,
+			planner_segment_count(NULL));
 
 	plan_info = NULL;			/* Most cost-effective, feasible plan. */
 
@@ -5783,21 +5784,22 @@ groupNumberPerSegemnt(double groupNum, double rows, double segmentNum)
 }
 
 static double
-getSkewValue(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount)
+getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount)
 {
-	AttrNumber		groupColumnIndex = InvalidAttrNumber;
+	AttrNumber		groupColumnIndex;
 	Oid				skewTable = InvalidOid;
 	AttrNumber		skewColumn = InvalidAttrNumber;
 	bool			skewInherit = false;
 	TargetEntry	   *tle;
 	HeapTupleData  *statsTuple;
 	AttStatsSlot	sslot;
+	double skew_ratio = 1.0;
 
 	if (ctx->numGroupCols != 1)
 		return 1;
 
 	groupColumnIndex = ctx->groupColIdx[0];
-	tle = get_tle_by_resno(ctx->tlist, groupColumnIndex);
+	tle = get_tle_by_resno(ctx->sub_tlist, groupColumnIndex);
 	if (IsA(tle->expr, Var))
 	{
 		Var		   *var = (Var *) tle->expr;
@@ -5829,12 +5831,14 @@ getSkewValue(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCo
 		double top_group_tuple_num = 0.0;
 		double tuple_num_per_group = rows / *ctx->p_dNumGroups;
 		double tuple_num_per_segment = rows / segmentCount;
-		double skew_ratio = 0.0;
 		Assert(sslot.nvalues > 0);
 		top_group_tuple_num = sslot.numbers[0];
 		skew_ratio = (top_group_tuple_num * rows - tuple_num_per_group) / tuple_num_per_segment;
-		return skew_ratio + 1;
+		skew_ratio += 1;
+		free_attstatsslot(&sslot);
 	}
-	else
-		return 1;
+
+	ReleaseSysCache(statsTuple);
+
+	return skew_ratio;
 }
