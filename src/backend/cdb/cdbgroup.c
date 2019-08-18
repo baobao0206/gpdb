@@ -5795,8 +5795,11 @@ getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCo
 	AttStatsSlot	sslot;
 	double skew_ratio = 1.0;
 
+	if (rows < segmentCount*10)
+		return gp_coefficient_1phase_agg;
+
 	if (ctx->numGroupCols != 1)
-		return 1;
+		return gp_coefficient_1phase_agg;
 
 	groupColumnIndex = ctx->groupColIdx[0];
 	tle = get_tle_by_resno(ctx->sub_tlist, groupColumnIndex);
@@ -5814,7 +5817,7 @@ getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCo
 	}
 
 	if (!OidIsValid(skewTable))
-		return 1;
+		return gp_coefficient_1phase_agg;
 
 	statsTuple = SearchSysCache3(STATRELATTINH,
 								 ObjectIdGetDatum(skewTable),
@@ -5822,7 +5825,7 @@ getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCo
 								 BoolGetDatum(skewInherit));
 
 	if (!HeapTupleIsValid(statsTuple))
-		return 1;
+		return gp_coefficient_1phase_agg;
 
 	if (get_attstatsslot(&sslot, statsTuple,
 						 STATISTIC_KIND_MCV, InvalidOid,
