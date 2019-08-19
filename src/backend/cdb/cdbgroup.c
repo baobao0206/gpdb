@@ -5774,6 +5774,12 @@ areAllExpressionsHashable(List *exprs)
 	return true;
 }
 
+/*
+ * groupNumberPerSegemnt
+ *
+ * Estimate how many groups are on each segment, when the group keys do not contain
+ * distribution keys.
+ */
 static double
 groupNumberPerSegemnt(double groupNum, double rows, double segmentNum)
 {
@@ -5783,6 +5789,14 @@ groupNumberPerSegemnt(double groupNum, double rows, double segmentNum)
 	return group_num;
 }
 
+/*
+ * getSkewRatio
+ *
+ * Calculate the skewness ratio by statistical information. If the information on
+ * STATISTIC_KIND_MCV kind exists in 'pg_statistic', skew_ratio =  (top_group_tuple_num
+ * * rows - tuple_num_per_group) / tuple_num_per_segment + 1. If not skew_ratio =
+ * gp_coefficient_1phase_agg.
+ */
 static double
 getSkewRatio(PlannerInfo *root, MppGroupContext *ctx, double rows, int segmentCount)
 {

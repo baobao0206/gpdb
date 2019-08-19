@@ -1676,6 +1676,11 @@ cost_material(Path *path, PlannerInfo *root,
 	path->total_cost = startup_cost + run_cost;
 }
 
+/*
+ * spilledGroupNumber
+ *
+ * Estimate how many groups are spilled.
+ */
 static double
 spilledGroupNumber(double hashTableCapacity, double numGroups, double rows)
 {
