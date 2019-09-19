@@ -53,6 +53,7 @@ typedef struct
 	Oid			transientoid;	/* OID of new heap into which to store */
 	Oid			oldreloid;
 	bool		concurrent;
+	char 		relpersistence;
 	/* These fields are filled by transientrel_startup: */
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
@@ -298,7 +299,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
 							   ExclusiveLock, false, true);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
-	dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent);
+	dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent, relpersistence);
 
 	/*
 	 * Now lock down security-restricted operations.
@@ -407,7 +408,7 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 }
 
 DestReceiver *
-CreateTransientRelDestReceiver(Oid transientoid, Oid oldreloid, bool concurrent)
+CreateTransientRelDestReceiver(Oid transientoid, Oid oldreloid, bool concurrent, char relpersistence)
 {
 	DR_transientrel *self = (DR_transientrel *) palloc0(sizeof(DR_transientrel));
 
@@ -419,6 +420,7 @@ CreateTransientRelDestReceiver(Oid transientoid, Oid oldreloid, bool concurrent)
 	self->transientoid = transientoid;
 	self->oldreloid = oldreloid;
 	self->concurrent = concurrent;
+	self->relpersistence = relpersistence;
 
 	return (DestReceiver *) self;
 }
@@ -431,6 +433,7 @@ transientrel_init(QueryDesc *queryDesc)
 	Oid			tableSpace;
 	Oid			OIDNewHeap;
 	bool		concurrent;
+	char		relpersistence;
 	LOCKMODE	lockmode;
 	RefreshClause *refreshClause;
 
@@ -455,20 +458,26 @@ transientrel_init(QueryDesc *queryDesc)
 
 	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
 	if (concurrent)
+	{
 		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+		relpersistence = RELPERSISTENCE_TEMP;
+	}
 	else
+	{
 		tableSpace = matviewRel->rd_rel->reltablespace;
-
+		relpersistence = matviewRel->rd_rel->relpersistence;
+	}
 	/*
 	 * Create the transient table that will receive the regenerated data. Lock
 	 * it against access by any other process until commit (by which time it
 	 * will be gone).
 	 */
-	OIDNewHeap = make_new_heap(matviewOid, tableSpace, concurrent,
+	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
 							   ExclusiveLock, false, false);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 
-	queryDesc->dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent);
+	queryDesc->dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent,
+													 relpersistence);
 
 	heap_close(matviewRel, NoLock);
 }
@@ -589,7 +598,7 @@ transientrel_shutdown(DestReceiver *self)
 
 	myState->transientrel = NULL;
 	if (Gp_role == GP_ROLE_EXECUTE && !myState->concurrent)
-		refresh_by_heap_swap(myState->oldreloid, myState->transientoid);
+		refresh_by_heap_swap(myState->oldreloid, myState->transientoid, myState->relpersistence);
 }
 
 /*
