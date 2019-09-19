@@ -29,14 +29,9 @@ EXPLAIN (costs off)
                      Sort Key: type
                      ->  Redistribute Motion 3:3  (slice1; segments: 3)
                            Hash Key: type
-                           ->  Result
-                                 ->  GroupAggregate
-                                       Group Key: type
-                                       ->  Sort
-                                             Sort Key: type
-                                             ->  Seq Scan on t
- Optimizer: Pivotal Optimizer (GPORCA) version 3.50.0
-(15 rows)
+                           ->  Seq Scan on t
+ Optimizer: Pivotal Optimizer (GPORCA) version 3.71.0
+(10 rows)
 
 CREATE MATERIALIZED VIEW tm AS SELECT type, sum(amt) AS totamt FROM t GROUP BY type WITH NO DATA distributed by(type);
 SELECT relispopulated FROM pg_class WHERE oid = 'tm'::regclass;
@@ -81,14 +76,9 @@ EXPLAIN (costs off)
                                        Sort Key: type
                                        ->  Redistribute Motion 3:3  (slice1; segments: 3)
                                              Hash Key: type
-                                             ->  Result
-                                                   ->  GroupAggregate
-                                                         Group Key: type
-                                                         ->  Sort
-                                                               Sort Key: type
-                                                               ->  Seq Scan on t
- Optimizer: Pivotal Optimizer (GPORCA) version 3.50.0
-(19 rows)
+                                             ->  Seq Scan on t
+ Optimizer: Pivotal Optimizer (GPORCA) version 3.71.0
+(14 rows)
 
 CREATE MATERIALIZED VIEW tvm AS SELECT * FROM tv ORDER BY type;
 SELECT * FROM tvm;
@@ -119,14 +109,9 @@ EXPLAIN (costs off)
                                              Sort Key: type
                                              ->  Redistribute Motion 3:3  (slice1; segments: 3)
                                                    Hash Key: type
-                                                   ->  Result
-                                                         ->  GroupAggregate
-                                                               Group Key: type
-                                                               ->  Sort
-                                                                     Sort Key: type
-                                                                     ->  Seq Scan on t
- Optimizer: Pivotal Optimizer (GPORCA) version 3.50.0
-(19 rows)
+                                                   ->  Seq Scan on t
+ Optimizer: Pivotal Optimizer (GPORCA) version 3.71.0
+(14 rows)
 
 CREATE MATERIALIZED VIEW tvvm AS SELECT * FROM tvv;
 CREATE VIEW tvvmv AS SELECT * FROM tvvm;
