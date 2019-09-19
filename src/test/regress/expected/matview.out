@@ -566,7 +566,7 @@ CREATE TABLE foo_data AS SELECT i, md5(random()::text)
 CREATE MATERIALIZED VIEW mv_foo AS SELECT * FROM foo_data distributed by(i);
 CREATE MATERIALIZED VIEW mv_foo AS SELECT * FROM foo_data distributed by(i);
 ERROR:  relation "mv_foo" already exists
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_foo AS SELECT * FROM foo_data distributed by(i);
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_foo AS SELECT * FROM foo_data;
 NOTICE:  relation "mv_foo" already exists, skipping
 CREATE UNIQUE INDEX ON mv_foo (i);
 RESET ROLE;

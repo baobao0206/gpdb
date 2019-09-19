@@ -204,7 +204,7 @@ CREATE TABLE foo_data AS SELECT i, md5(random()::text)
   FROM generate_series(1, 10) i;
 CREATE MATERIALIZED VIEW mv_foo AS SELECT * FROM foo_data distributed by(i);
 CREATE MATERIALIZED VIEW mv_foo AS SELECT * FROM foo_data distributed by(i);
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_foo AS SELECT * FROM foo_data distributed by(i);
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_foo AS SELECT * FROM foo_data;
 CREATE UNIQUE INDEX ON mv_foo (i);
 RESET ROLE;
 REFRESH MATERIALIZED VIEW mv_foo;
