@@ -42,6 +42,12 @@
 	((heapBlk / pagesPerRange) / REVMAP_PAGE_MAXITEMS)
 #define HEAPBLK_TO_REVMAP_INDEX(pagesPerRange, heapBlk) \
 	((heapBlk / pagesPerRange) % REVMAP_PAGE_MAXITEMS)
+#define HEAPBLK_TO_REVMAP_UPPER_BLK(pagesPerRange, heapBlk) \
+	(HEAPBLK_TO_REVMAP_BLK(pagesPerRange, heapBlk) / REVMAP_UPPER_PAGE_MAXITEMS)
+#define HEAPBLK_TO_REVMAP_UPPER_IDX(pagesPerRange, heapBlk) \
+	(HEAPBLK_TO_REVMAP_BLK(pagesPerRange, heapBlk) % REVMAP_UPPER_PAGE_MAXITEMS)
+#define REVMAP_UPPER_PAGE_TOTAL_NUM(pagesPerRange) \
+	(HEAPBLK_TO_REVMAP_UPPER_BLK(pagesPerRange, 0xffffffff))
 
 
 struct BrinRevmap
@@ -51,6 +57,7 @@ struct BrinRevmap
 	BlockNumber rm_lastRevmapPage;		/* cached from the metapage */
 	Buffer		rm_metaBuf;
 	Buffer		rm_currBuf;
+	bool		rm_isAo;
 };
 
 /* typedef appears in brin_revmap.h */
@@ -60,6 +67,8 @@ static BlockNumber revmap_get_blkno(BrinRevmap *revmap,
 				 BlockNumber heapBlk);
 static Buffer revmap_get_buffer(BrinRevmap *revmap, BlockNumber heapBlk);
 static BlockNumber revmap_extend_and_get_blkno(BrinRevmap *revmap,
+							BlockNumber heapBlk);
+static BlockNumber revmap_extend_and_get_blkno_ao(BrinRevmap *revmap,
 							BlockNumber heapBlk);
 static void revmap_physical_extend(BrinRevmap *revmap);
 
@@ -88,6 +97,7 @@ brinRevmapInitialize(Relation idxrel, BlockNumber *pagesPerRange,
 	revmap->rm_lastRevmapPage = metadata->lastRevmapPage;
 	revmap->rm_metaBuf = meta;
 	revmap->rm_currBuf = InvalidBuffer;
+	revmap->rm_isAo = metadata->isAo;
 
 	*pagesPerRange = metadata->pagesPerRange;
 
@@ -116,7 +126,10 @@ brinRevmapExtend(BrinRevmap *revmap, BlockNumber heapBlk)
 {
 	BlockNumber mapBlk PG_USED_FOR_ASSERTS_ONLY;
 
-	mapBlk = revmap_extend_and_get_blkno(revmap, heapBlk);
+	if (revmap->rm_isAo)
+		mapBlk = revmap_extend_and_get_blkno_ao(revmap, heapBlk);
+	else
+		mapBlk = revmap_extend_and_get_blkno(revmap, heapBlk);
 
 	/* Ensure the buffer we got is in the expected range */
 	Assert(mapBlk != InvalidBlockNumber &&
@@ -172,6 +185,28 @@ brinSetHeapBlockItemptr(Buffer buf, BlockNumber pagesPerRange,
 				   ItemPointerGetBlockNumber(&tid),
 				   ItemPointerGetOffsetNumber(&tid));
 }
+
+/*
+ * We have an extra upper layer in the brin revmap of the
+ * ao / aocs table. Set the block number of revmap page by this
+ * function.
+ */
+void
+brinSetRevmapBlockNumber(Buffer buf, BlockNumber pagesPerRange,
+						 BlockNumber heapBlk, BlockNumber revmapBlk)
+{
+	RevmapUpperBlockContents *contents;
+	Page		page;
+	BlockNumber targetupperindex;
+	BlockNumber *blks;
+
+	page = BufferGetPage(buf);
+	contents = (RevmapUpperBlockContents*) PageGetContents(page);
+	targetupperindex = HEAPBLK_TO_REVMAP_UPPER_IDX(pagesPerRange, heapBlk);
+	blks = (BlockNumber*) contents->rm_blocks;
+	blks[targetupperindex] = revmapBlk;
+}
+
 
 /*
  * Fetch the BrinTuple for a given heap block.
@@ -300,13 +335,8 @@ brinGetTupleForHeapBlock(BrinRevmap *revmap, BlockNumber heapBlk,
 	return NULL;
 }
 
-/*
- * Given a heap block number, find the corresponding physical revmap block
- * number and return it.  If the revmap page hasn't been allocated yet, return
- * InvalidBlockNumber.
- */
 static BlockNumber
-revmap_get_blkno(BrinRevmap *revmap, BlockNumber heapBlk)
+revmap_get_blkno_heap(BrinRevmap *revmap, BlockNumber heapBlk)
 {
 	BlockNumber targetblk;
 
@@ -318,6 +348,45 @@ revmap_get_blkno(BrinRevmap *revmap, BlockNumber heapBlk)
 		return targetblk;
 
 	return InvalidBlockNumber;
+}
+
+static BlockNumber
+revmap_get_blkno_ao(BrinRevmap *revmap, BlockNumber heapBlk)
+{
+	BlockNumber targetblk;
+	BlockNumber targetupperblk;
+	BlockNumber targetupperidx;
+	Buffer upperbuf;
+	RevmapUpperBlockContents *contents;
+	BlockNumber *blks;
+
+	targetupperblk = HEAPBLK_TO_REVMAP_UPPER_BLK(revmap->rm_pagesPerRange, heapBlk) + 1;
+	targetupperidx = HEAPBLK_TO_REVMAP_UPPER_IDX(revmap->rm_pagesPerRange, heapBlk);
+	upperbuf = ReadBuffer(revmap->rm_irel, targetupperblk);
+	LockBuffer(upperbuf, BUFFER_LOCK_SHARE);
+	contents = (RevmapUpperBlockContents*) PageGetContents(BufferGetPage(upperbuf));
+	blks = (BlockNumber*) contents->rm_blocks;
+	targetblk =  blks[targetupperidx];
+	UnlockReleaseBuffer(upperbuf);
+
+	if (targetblk == 0)
+		return InvalidBlockNumber;
+
+	return targetblk;
+}
+
+/*
+ * Given a heap block number, find the corresponding physical revmap block
+ * number and return it.  If the revmap page hasn't been allocated yet, return
+ * InvalidBlockNumber.
+ */
+static BlockNumber
+revmap_get_blkno(BrinRevmap *revmap, BlockNumber heapBlk)
+{
+	if (revmap->rm_isAo)
+		return revmap_get_blkno_ao(revmap, heapBlk);
+	else
+		return revmap_get_blkno_heap(revmap, heapBlk);
 }
 
 /*
@@ -379,6 +448,59 @@ revmap_extend_and_get_blkno(BrinRevmap *revmap, BlockNumber heapBlk)
 	}
 
 	return targetblk;
+}
+
+/*
+ * Given a heap block number, find the corresponding physical revmap block
+ * number and return it. If the revmap page hasn't been allocated yet, extend
+ * the revmap until it is.
+ *
+ * This is the function called in brin on ao/cs table.
+ */
+static BlockNumber
+revmap_extend_and_get_blkno_ao(BrinRevmap *revmap, BlockNumber heapBlk)
+{
+	BlockNumber targetupperblk;
+	BlockNumber targetupperindex;
+	Buffer		upperbuffer;
+	RevmapUpperBlockContents *contents;
+	BlockNumber *blks;
+
+	targetupperblk = HEAPBLK_TO_REVMAP_UPPER_BLK(revmap->rm_pagesPerRange, heapBlk) + 1;
+	targetupperindex = HEAPBLK_TO_REVMAP_UPPER_IDX(revmap->rm_pagesPerRange, heapBlk);
+	upperbuffer = ReadBuffer(revmap->rm_irel, targetupperblk);
+
+	LockBuffer(upperbuffer, BUFFER_LOCK_SHARE);
+	contents = (RevmapUpperBlockContents*) PageGetContents(BufferGetPage(upperbuffer));
+	blks = (BlockNumber*) contents->rm_blocks;
+	LockBuffer(upperbuffer, BUFFER_LOCK_UNLOCK);
+	if (blks[targetupperindex] == 0)
+	{
+		CHECK_FOR_INTERRUPTS();
+		revmap_physical_extend(revmap);
+	}
+	LockBuffer(upperbuffer, BUFFER_LOCK_EXCLUSIVE);
+
+	blks[targetupperindex] = revmap->rm_lastRevmapPage;
+	MarkBufferDirty(upperbuffer);
+
+	if (RelationNeedsWAL(revmap->rm_irel))
+	{
+		xl_brin_revmap_extend_upper xlrec;
+		XLogRecPtr	recptr;
+
+		xlrec.heapBlk = heapBlk;
+		xlrec.pagesPerRange = revmap->rm_pagesPerRange;
+		xlrec.revmapBlk = revmap->rm_lastRevmapPage;
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfBrinRevmapExtendUpper);
+		XLogRegisterBuffer(0, upperbuffer, 0);
+		recptr = XLogInsert(RM_BRIN_ID, XLOG_BRIN_REVMAP_EXTEND_UPPER);
+		PageSetLSN(BufferGetPage(upperbuffer), recptr);
+	}
+
+	UnlockReleaseBuffer(upperbuffer);
+	return revmap->rm_lastRevmapPage;
 }
 
 /*
@@ -507,4 +629,78 @@ revmap_physical_extend(BrinRevmap *revmap)
 	LockBuffer(revmap->rm_metaBuf, BUFFER_LOCK_UNLOCK);
 
 	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * When we build a brin in ao/aocs table, brin has a upper level. All the
+ * blocks used in upper level will be initialized once.
+ */
+void
+brin_init_upper_pages(Relation index, BlockNumber pagesPerRange)
+{
+	Buffer		buf;
+	Page 		page;
+	Buffer 		metaBuf;
+	Page		metaPage;
+	BrinMetaPageData *metadata;
+
+	metaBuf = ReadBuffer(index, BRIN_METAPAGE_BLKNO);
+	LockBuffer(metaBuf, BUFFER_LOCK_EXCLUSIVE);
+	metaPage = BufferGetPage(metaBuf);
+
+	for (BlockNumber page_index = 1;
+		 page_index < REVMAP_UPPER_PAGE_TOTAL_NUM(pagesPerRange) + 1;
+		 ++page_index)
+	{
+		buf = ReadBuffer(index, P_NEW);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		brin_page_init(BufferGetPage(buf), BRIN_PAGETYPE_REVMAP);
+
+		MarkBufferDirty(buf);
+
+		metadata = (BrinMetaPageData *) PageGetContents(metaPage);
+		metadata->lastRevmapPage = REVMAP_UPPER_PAGE_TOTAL_NUM(pagesPerRange);
+
+		if (RelationNeedsWAL(index))
+		{
+			xl_brin_createupperblk xlrec;
+			XLogRecPtr	recptr;
+
+			xlrec.targetBlk = page_index;
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, SizeOfBrinCreateUpperBlk);
+			XLogRegisterBuffer(0, metaBuf, 0);
+			XLogRegisterBuffer(1, buf, REGBUF_WILL_INIT);
+			recptr = XLogInsert(RM_BRIN_ID, XLOG_BRIN_REVMAP_INIT_UPPER_BLK);
+
+			page = BufferGetPage(buf);
+			PageSetLSN(metaPage, recptr);
+			PageSetLSN(page, recptr);
+		}
+
+		UnlockReleaseBuffer(buf);
+	}
+
+	UnlockReleaseBuffer(metaBuf);
+}
+
+/*
+ * Get the start block number of the current aoseg by block number.
+ */
+BlockNumber
+heapBlockGetCurrentAosegStart(BlockNumber heapBlk)
+{
+	return heapBlk & 0xFE000000;
+}
+
+/*
+ * Get the start block number of the current aoseg by seg number.
+ */
+BlockNumber
+segnoGetCurrentAosegStart(int segno)
+{
+	BlockNumber blk;
+	blk = segno;
+	return blk << 25;
 }

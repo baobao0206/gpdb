@@ -33,8 +33,13 @@ extern Buffer brinLockRevmapPageForUpdate(BrinRevmap *revmap,
 							BlockNumber heapBlk);
 extern void brinSetHeapBlockItemptr(Buffer rmbuf, BlockNumber pagesPerRange,
 						BlockNumber heapBlk, ItemPointerData tid);
+
+extern void brinSetRevmapBlockNumber(Buffer buf, BlockNumber pagesPerRange,
+									 BlockNumber heapBlk, BlockNumber revmapBlk);
 extern BrinTuple *brinGetTupleForHeapBlock(BrinRevmap *revmap,
 						 BlockNumber heapBlk, Buffer *buf, OffsetNumber *off,
 						 Size *size, int mode, Snapshot snapshot);
-
+extern void brin_init_upper_pages(Relation index, BlockNumber pagesPerRange);
+extern BlockNumber heapBlockGetCurrentAosegStart(BlockNumber heapBlk);
+extern BlockNumber segnoGetCurrentAosegStart(int segno);
 #endif   /* BRIN_REVMAP_H */

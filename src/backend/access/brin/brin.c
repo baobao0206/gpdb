@@ -15,6 +15,8 @@
  */
 #include "postgres.h"
 
+#include "access/aosegfiles.h"
+#include "access/aocssegfiles.h"
 #include "access/brin.h"
 #include "access/brin_page.h"
 #include "access/brin_pageops.h"
@@ -248,7 +250,7 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 			 */
 			if (!brin_doupdate(idxRel, pagesPerRange, revmap, heapBlk,
 							   buf, off, origtup, origsz, newtup, newsz,
-							   samepage))
+							   samepage, false))
 			{
 				/* no luck; start over */
 				MemoryContextResetAndDeleteChildren(tupcxt);
@@ -320,11 +322,14 @@ bringetbitmap(IndexScanDesc scan, Node *n)
 	Relation	heapRel;
 	BrinOpaque *opaque;
 	BlockNumber nblocks;
+	BlockNumber aoBlocks[AOTupleId_MaxSegmentFileNum];
 	BlockNumber heapBlk;
 	int			totalpages = 0;
 	FmgrInfo   *consistentFn;
 	MemoryContext oldcxt;
 	MemoryContext perRangeCxt;
+	int			segno;
+	BlockNumber seg_start_blk;
 
 	opaque = (BrinOpaque *) scan->opaque;
 	bdesc = opaque->bo_bdesc;
@@ -350,7 +355,57 @@ bringetbitmap(IndexScanDesc scan, Node *n)
 	 */
 	heapOid = IndexGetRelation(RelationGetRelid(idxRel), false);
 	heapRel = heap_open(heapOid, AccessShareLock);
-	nblocks = RelationGetNumberOfBlocks(heapRel);
+	if (RelationIsAppendOptimized(heapRel))
+	{
+		Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
+
+		for (int segno = 0; segno < AOTupleId_MaxSegmentFileNum; ++segno)
+		{
+			if (RelationIsAoRows(heapRel))
+			{
+				FileSegInfo *fsinfo;
+				fsinfo = GetFileSegInfo(heapRel, appendOnlyMetaDataSnapshot, segno);
+				seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+				if (fsinfo)
+				{
+					aoBlocks[segno] = fsinfo->total_tupcount / 32768;
+					if (fsinfo->total_tupcount % 32768 > 0)
+						aoBlocks[segno] += 1;
+					nblocks = seg_start_blk + aoBlocks[segno];
+				}
+				else
+				{
+					aoBlocks[segno] = 0;
+				}
+			}
+			else
+			{
+				AOCSFileSegInfo *fsinfo;
+				fsinfo = GetAOCSFileSegInfo(heapRel, appendOnlyMetaDataSnapshot, segno);
+				seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+				if (fsinfo)
+				{
+					aoBlocks[segno] = fsinfo->total_tupcount / 32768;
+					if (fsinfo->total_tupcount % 32768 > 0)
+						aoBlocks[segno] += 1;
+					nblocks = seg_start_blk + aoBlocks[segno];
+				}
+				else
+				{
+					aoBlocks[segno] = 0;
+				}
+			}
+
+		}
+
+		UnregisterSnapshot(appendOnlyMetaDataSnapshot);
+	}
+	else
+	{
+		nblocks = RelationGetNumberOfBlocks(heapRel);
+	}
 	heap_close(heapRel, AccessShareLock);
 
 	/*
@@ -376,6 +431,7 @@ bringetbitmap(IndexScanDesc scan, Node *n)
 	 * incrementing by the number of pages per range; this gives us a full
 	 * view of the table.
 	 */
+	segno = 0;
 	for (heapBlk = 0; heapBlk < nblocks; heapBlk += opaque->bo_pagesPerRange)
 	{
 		bool		addrange;
@@ -384,6 +440,19 @@ bringetbitmap(IndexScanDesc scan, Node *n)
 		Size		size;
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (RelationIsAppendOptimized(heapRel))
+		{
+			seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+			if (heapBlk >= seg_start_blk + aoBlocks[segno])
+			{
+				segno++;
+				continue;
+			}
+			if (heapBlk < seg_start_blk)
+				heapBlk = seg_start_blk;
+		}
 
 		MemoryContextResetAndDeleteChildren(perRangeCxt);
 
@@ -570,6 +639,10 @@ brinbuildCallback(Relation index,
 	 * pages, if they were devoid of live tuples; make sure to insert index
 	 * tuples for those too.
 	 */
+
+	if (state->bs_currRangeStart < heapBlockGetCurrentAosegStart(thisblock))
+		state->bs_currRangeStart = heapBlockGetCurrentAosegStart(thisblock);
+
 	while (thisblock > state->bs_currRangeStart + state->bs_pagesPerRange - 1)
 	{
 
@@ -622,7 +695,9 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	BrinBuildState *state;
 	Buffer		meta;
 	BlockNumber pagesPerRange;
+	bool		isAo;
 
+	isAo = RelationIsAppendOptimized(heap);
 	/*
 	 * We expect to be called exactly once for any index relation.
 	 */
@@ -640,7 +715,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	LockBuffer(meta, BUFFER_LOCK_EXCLUSIVE);
 
 	brin_metapage_init(BufferGetPage(meta), BrinGetPagesPerRange(index),
-					   BRIN_CURRENT_VERSION);
+					   BRIN_CURRENT_VERSION, RelationIsAppendOptimized(heap));
 	MarkBufferDirty(meta);
 
 	if (RelationNeedsWAL(index))
@@ -651,6 +726,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		xlrec.version = BRIN_CURRENT_VERSION;
 		xlrec.pagesPerRange = BrinGetPagesPerRange(index);
+		xlrec.isAo = isAo;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfBrinCreateIdx);
@@ -663,6 +739,9 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 
 	UnlockReleaseBuffer(meta);
+
+	if (isAo)
+		brin_init_upper_pages(index, BrinGetPagesPerRange(index));
 
 	/*
 	 * Initialize our state, including the deformed tuple state.
@@ -709,7 +788,7 @@ brinbuildempty(Relation index)
 	/* Initialize and xlog metabuffer. */
 	START_CRIT_SECTION();
 	brin_metapage_init(BufferGetPage(metabuf), BrinGetPagesPerRange(index),
-					   BRIN_CURRENT_VERSION);
+					   BRIN_CURRENT_VERSION, false);
 	MarkBufferDirty(metabuf);
 	log_newpage_buffer(metabuf, false);
 	END_CRIT_SECTION();
@@ -803,7 +882,7 @@ brinoptions(Datum reloptions, bool validate)
  * that are not currently summarized.
  */
 Datum
-brin_summarize_new_values(PG_FUNCTION_ARGS)
+brin_summarize_new_values_internal(PG_FUNCTION_ARGS)
 {
 	Oid			indexoid = PG_GETARG_OID(0);
 	Oid			heapoid;
@@ -1052,10 +1131,21 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 	state->bs_currRangeStart = heapBlk;
 	scanNumBlks = heapBlk + state->bs_pagesPerRange <= heapNumBlks ?
 		state->bs_pagesPerRange : heapNumBlks - heapBlk;
-	IndexBuildHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
-							heapBlk, scanNumBlks,
-							brinbuildCallback, (void *) state,
-							estate, snapshot, OldestXmin);
+	if (RelationIsAoRows(heapRel))
+		IndexBuildAppendOnlyRowRangeScan(heapRel, state->bs_irel, indexInfo,
+										 heapBlk, scanNumBlks,
+										 estate, snapshot,
+										 brinbuildCallback, (void *) state);
+	else if (RelationIsAoCols(heapRel))
+		IndexBuildAppendOnlyColRangeScan(heapRel, state->bs_irel, indexInfo,
+										 heapBlk, scanNumBlks,
+										 estate, snapshot,
+										 brinbuildCallback, (void *) state);
+	else
+		IndexBuildHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
+								heapBlk, scanNumBlks,
+								brinbuildCallback, (void *) state,
+								estate, snapshot, OldestXmin);
 
 	/*
 	 * Now we update the values obtained by the scan with the placeholder
@@ -1081,7 +1171,7 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 		didupdate =
 			brin_doupdate(state->bs_irel, state->bs_pagesPerRange,
 						  state->bs_rmAccess, heapBlk, phbuf, offset,
-						  phtup, phsz, newtup, newsize, samepage);
+						  phtup, phsz, newtup, newsize, samepage, false);
 		brin_free_tuple(phtup);
 		brin_free_tuple(newtup);
 
@@ -1136,8 +1226,11 @@ brinsummarize(Relation index, Relation heapRel, double *numSummarized,
 	IndexInfo  *indexInfo = NULL;
 	BlockNumber heapNumBlocks;
 	BlockNumber heapBlk;
+	BlockNumber aoBlocks[AOTupleId_MaxSegmentFileNum];
 	BlockNumber pagesPerRange;
 	Buffer		buf;
+	int			segno;
+	BlockNumber seg_start_blk;
 
 	revmap = brinRevmapInitialize(index, &pagesPerRange, NULL);
 
@@ -1145,13 +1238,78 @@ brinsummarize(Relation index, Relation heapRel, double *numSummarized,
 	 * Scan the revmap to find unsummarized items.
 	 */
 	buf = InvalidBuffer;
-	heapNumBlocks = RelationGetNumberOfBlocks(heapRel);
+
+	if (RelationIsAppendOptimized(heapRel))
+	{
+		Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
+
+		for (int segno = 0; segno < AOTupleId_MaxSegmentFileNum; ++segno)
+		{
+			if (RelationIsAoRows(heapRel))
+			{
+				FileSegInfo *fsinfo;
+				fsinfo = GetFileSegInfo(heapRel, appendOnlyMetaDataSnapshot, segno);
+				seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+				if (fsinfo)
+				{
+					aoBlocks[segno] = fsinfo->total_tupcount / 32768;
+					if (fsinfo->total_tupcount % 32768 > 0)
+						aoBlocks[segno] += 1;
+					heapNumBlocks = seg_start_blk + aoBlocks[segno];
+				}
+				else
+				{
+					aoBlocks[segno] = 0;
+				}
+			}
+			else
+			{
+				AOCSFileSegInfo *fsinfo;
+				fsinfo = GetAOCSFileSegInfo(heapRel, appendOnlyMetaDataSnapshot, segno);
+				seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+				if (fsinfo)
+				{
+					aoBlocks[segno] = fsinfo->total_tupcount / 32768;
+					if (fsinfo->total_tupcount % 32768 > 0)
+						aoBlocks[segno] += 1;
+					heapNumBlocks = seg_start_blk + aoBlocks[segno];
+				}
+				else
+				{
+					aoBlocks[segno] = 0;
+				}
+			}
+		}
+
+		UnregisterSnapshot(appendOnlyMetaDataSnapshot);
+	}
+	else
+	{
+		heapNumBlocks = RelationGetNumberOfBlocks(heapRel);
+	}
+
+	segno = 0;
 	for (heapBlk = 0; heapBlk < heapNumBlocks; heapBlk += pagesPerRange)
 	{
 		BrinTuple  *tup;
 		OffsetNumber off;
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (RelationIsAppendOptimized(heapRel))
+		{
+			seg_start_blk = segnoGetCurrentAosegStart(segno);
+
+			if (heapBlk >= seg_start_blk + aoBlocks[segno])
+			{
+				segno++;
+				continue;
+			}
+			if (heapBlk < seg_start_blk)
+				heapBlk = seg_start_blk;
+		}
 
 		tup = brinGetTupleForHeapBlock(revmap, heapBlk, &buf, &off, NULL,
 									   BUFFER_LOCK_SHARE, NULL);

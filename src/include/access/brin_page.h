@@ -67,6 +67,7 @@ typedef struct BrinMetaPageData
 	uint32		brinVersion;
 	BlockNumber pagesPerRange;
 	BlockNumber lastRevmapPage;
+	bool		isAo;
 } BrinMetaPageData;
 
 #define BRIN_CURRENT_VERSION		1
@@ -85,6 +86,11 @@ typedef struct RevmapContents
 	ItemPointerData rm_tids[1];
 } RevmapContents;
 
+typedef struct RevmapUpperBlockContents
+{
+	BlockNumber rm_blocks[1];
+} RevmapUpperBlockContents;
+
 #define REVMAP_CONTENT_SIZE \
 	(BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - \
 	 offsetof(RevmapContents, rm_tids) - \
@@ -92,5 +98,11 @@ typedef struct RevmapContents
 /* max num of items in the array */
 #define REVMAP_PAGE_MAXITEMS \
 	(REVMAP_CONTENT_SIZE / sizeof(ItemPointerData))
+
+#define REVMAP_UPPER_PAGE_MAXITEMS \
+	(REVMAP_CONTENT_SIZE/ sizeof(BlockNumber))
+
+#define REVMAP_INDEX_PAGE_NUM \
+	(65536 / REVMAP_PAGE_MAXITEMS) * 65536
 
 #endif   /* BRIN_PAGE_H */

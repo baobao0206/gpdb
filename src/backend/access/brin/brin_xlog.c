@@ -31,10 +31,50 @@ brin_xlog_createidx(XLogReaderState *record)
 	buf = XLogInitBufferForRedo(record, 0);
 	Assert(BufferIsValid(buf));
 	page = (Page) BufferGetPage(buf);
-	brin_metapage_init(page, xlrec->pagesPerRange, xlrec->version);
+	brin_metapage_init(page, xlrec->pagesPerRange, xlrec->version, xlrec->isAo);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buf);
 	UnlockReleaseBuffer(buf);
+}
+
+static void
+brin_xlog_revmap_init_upper_blk(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_brin_createupperblk *xlrec = (xl_brin_createupperblk *) XLogRecGetData(record);
+	Buffer		buf;
+	Page		page;
+	XLogRedoAction action;
+	Buffer		metabuf;
+
+	/* Update the metapage */
+	action = XLogReadBufferForRedo(record, 0, &metabuf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		metapg;
+		BrinMetaPageData *metadata;
+
+		metapg = BufferGetPage(metabuf);
+		metadata = (BrinMetaPageData *) PageGetContents(metapg);
+
+		Assert(metadata->lastRevmapPage == xlrec->targetBlk - 1);
+		metadata->lastRevmapPage = xlrec->targetBlk;
+
+		PageSetLSN(metapg, lsn);
+		MarkBufferDirty(metabuf);
+	}
+
+	/* create upper blk */
+	buf = XLogInitBufferForRedo(record, 1);
+	page = (Page) BufferGetPage(buf);
+	brin_page_init(page, BRIN_PAGETYPE_REVMAP);
+
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(buf);
+
+	UnlockReleaseBuffer(buf);
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
 }
 
 /*
@@ -260,6 +300,29 @@ brin_xlog_revmap_extend(XLogReaderState *record)
 		UnlockReleaseBuffer(metabuf);
 }
 
+static void
+brin_xlog_revmap_extend_upper(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_brin_revmap_extend_upper *xlrec;
+	Buffer		buf;
+	Page		page;
+	XLogRedoAction action;
+
+	xlrec = (xl_brin_revmap_extend_upper *) XLogRecGetData(record);
+	action = XLogReadBufferForRedo(record, 0, &buf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		page = (Page) BufferGetPage(buf);
+		brinSetRevmapBlockNumber(buf, xlrec->pagesPerRange, xlrec->heapBlk, xlrec->revmapBlk);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buf);
+	}
+
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+}
+
 void
 brin_redo(XLogReaderState *record)
 {
@@ -269,6 +332,9 @@ brin_redo(XLogReaderState *record)
 	{
 		case XLOG_BRIN_CREATE_INDEX:
 			brin_xlog_createidx(record);
+			break;
+		case XLOG_BRIN_REVMAP_INIT_UPPER_BLK:
+			brin_xlog_revmap_init_upper_blk(record);
 			break;
 		case XLOG_BRIN_INSERT:
 			brin_xlog_insert(record);
@@ -281,6 +347,9 @@ brin_redo(XLogReaderState *record)
 			break;
 		case XLOG_BRIN_REVMAP_EXTEND:
 			brin_xlog_revmap_extend(record);
+			break;
+		case XLOG_BRIN_REVMAP_EXTEND_UPPER:
+			brin_xlog_revmap_extend_upper(record);
 			break;
 		default:
 			elog(PANIC, "brin_redo: unknown op code %u", info);
