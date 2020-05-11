@@ -241,6 +241,7 @@ extern void ao_vacuum_rel_post_cleanup(Relation onerel, int options, VacuumParam
 extern void analyze_rel(Oid relid, RangeVar *relation, int options,
 			VacuumParams *params, List *va_cols, bool in_outer_xact,
 			BufferAccessStrategy bstrategy);
+void dispatchAnalyze(int options, RangeVar *relation, List *va_cols);
 
 extern bool std_typanalyze(VacAttrStats *stats);
 

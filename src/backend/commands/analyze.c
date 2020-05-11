@@ -86,6 +86,7 @@
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
+#include "catalog/oid_dispatch.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_inherits_fn.h"
 #include "catalog/pg_namespace.h"
@@ -215,6 +216,8 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	{
 		analyze_rel_internal(relid, relation, options, params, va_cols,
 				in_outer_xact, bstrategy);
+		if (Gp_role == GP_ROLE_DISPATCH)
+			dispatchAnalyze(options, relation, va_cols);
 	}
 	/* Clean up in case of error. */
 	PG_CATCH();
@@ -2208,7 +2211,7 @@ parse_record_to_string(char *string, TupleDesc tupdesc, char** values, bool *nul
 	Assert(string != NULL);
 	Assert(values != NULL);
 	Assert(nulls != NULL);
-	
+
 	ncolumns = tupdesc->natts;
 	needComma = false;
 
@@ -2436,16 +2439,16 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	 */
 	sampleTupleDesc = CreateTupleDescCopy(relDesc);
 	ncolumns = numLiveColumns + FIX_ATTR_NUM;
-	
+
 	funcTupleDesc = CreateTemplateTupleDesc(ncolumns, false);
 	TupleDescInitEntry(funcTupleDesc, (AttrNumber) 1, "", FLOAT8OID, -1, 0);
 	TupleDescInitEntry(funcTupleDesc, (AttrNumber) 2, "", FLOAT8OID, -1, 0);
 	TupleDescInitEntry(funcTupleDesc, (AttrNumber) 3, "", TEXTOID, -1, 0);
-	
+
 	for (i = 0; i < relDesc->natts; i++)
 	{
 		Form_pg_attribute attr = relDesc->attrs[i];
-		
+
 		Oid			typid = gp_acquire_sample_rows_col_type(attr->atttypid);
 
 		sampleTupleDesc->attrs[i]->atttypid = typid;
@@ -2454,7 +2457,7 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 		{
 			TupleDescInitEntry(funcTupleDesc, (AttrNumber) 4 + index, "",
 							   typid, attr->atttypmod, attr->attndims);
-		
+
 			index++;
 		}
 	}
@@ -4504,4 +4507,37 @@ compare_mcvs(const void *a, const void *b)
 	int			db = ((const ScalarMCVItem *) b)->first;
 
 	return da - db;
+}
+
+/*
+ * dispatchAnalyze
+ */
+void dispatchAnalyze(int options, RangeVar *relation, List *va_cols)
+{
+	CdbPgResults cdb_pgresults;
+	VacuumStmt *vacstmt = makeNode(VacuumStmt);
+	int flags = DF_CANCEL_ON_ERROR | DF_WITH_SNAPSHOT;
+
+	Assert(Gp_role == GP_ROLE_DISPATCH);
+	Assert(options & VACOPT_ANALYZE);
+
+	/* VACUUM, without ANALYZE */
+	options &= ~VACOPT_VACUUM;
+	options &= ~VACOPT_FREEZE;
+	options &= ~VACOPT_FULL;
+	options &= ~VACOPT_ROOTONLY;
+	options &= ~VACOPT_VERBOSE;
+
+	if (options & VACOPT_FULLSCAN)
+		return;
+
+	vacstmt->options = options;
+	vacstmt->relation = relation;
+	vacstmt->va_cols = va_cols;
+
+	/* XXX: Some kinds of VACUUM assign a new relfilenode. bitmap indexes maybe? */
+	CdbDispatchUtilityStatement((Node *) vacstmt, flags,
+								GetAssignedOidsForDispatch(),
+								&cdb_pgresults);
+	cdbdisp_clearCdbPgResults(&cdb_pgresults);
 }

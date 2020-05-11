@@ -411,7 +411,8 @@ vacuum(int options, RangeVar *relation, Oid relid, VacuumParams *params,
 				 */
 				if (use_own_xacts)
 				{
-					StartTransactionCommand();
+					if (Gp_role != GP_ROLE_EXECUTE)
+						StartTransactionCommand();
 					/* functions in indexes may want a snapshot set */
 					PushActiveSnapshot(GetTransactionSnapshot());
 				}
@@ -422,7 +423,8 @@ vacuum(int options, RangeVar *relation, Oid relid, VacuumParams *params,
 				if (use_own_xacts)
 				{
 					PopActiveSnapshot();
-					CommitTransactionCommand();
+					if (Gp_role != GP_ROLE_EXECUTE)
+						CommitTransactionCommand();
 				}
 			}
 		}
