@@ -8,6 +8,7 @@
 #include "cdb/cdbaocsam.h"
 #include "cdb/cdbvars.h"
 #include "commands/vacuum.h"
+#include "nodes/makefuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -367,6 +368,34 @@ gp_acquire_sample_rows(PG_FUNCTION_ARGS)
 	funcctx->user_fctx = NULL;
 
 	SRF_RETURN_DONE(funcctx);
+}
+
+Datum
+gp_analyze_rel(PG_FUNCTION_ARGS)
+{
+	Relation	onerel;
+	VacuumParams params;
+	RangeVar   *this_rangevar;
+	List 	   *va_cols;
+	Oid			relOid = PG_GETARG_OID(0);
+	char	   *va_cals_str = PG_GETARG_CSTRING(1);
+
+	onerel = relation_open(relOid, AccessShareLock);
+
+	{
+		params.freeze_min_age = -1;
+		params.freeze_table_age = -1;
+		params.multixact_freeze_min_age = -1;
+		params.multixact_freeze_table_age = -1;
+	}
+	this_rangevar = makeRangeVar(get_namespace_name(onerel->rd_rel->relnamespace),
+								 pstrdup(RelationGetRelationName(onerel)),
+								 -1);
+	va_cols = stringToNode(va_cals_str);
+	analyze_rel(relOid, this_rangevar, VACOPT_ANALYZE, &params, va_cols,
+				true, GetAccessStrategy(BAS_VACUUM));
+
+	PG_RETURN_NULL();
 }
 
 /*

@@ -179,6 +179,7 @@ static VacAttrStats *examine_attribute(Relation onerel, int attnum,
 static int acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);
+static void analyze_dispatcher(Oid relid, List *va_cols);
 static BlockNumber acquire_number_of_blocks(Relation onerel);
 static BlockNumber acquire_index_number_of_blocks(Relation indexrel, Relation tablerel);
 
@@ -215,6 +216,8 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	{
 		analyze_rel_internal(relid, relation, options, params, va_cols,
 				in_outer_xact, bstrategy);
+		if (Gp_role == GP_ROLE_DISPATCH)
+			analyze_dispatcher(relid, va_cols);
 	}
 	/* Clean up in case of error. */
 	PG_CATCH();
@@ -2613,6 +2616,23 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	cdbdisp_clearCdbPgResults(&cdb_pgresults);
 
 	return sampleTuples;
+}
+
+static void analyze_dispatcher(Oid relid, List *va_cols)
+{
+	StringInfoData	str;
+	char		   *va_cols_str;
+
+	initStringInfo(&str);
+	va_cols_str = nodeToString(va_cols);
+	appendStringInfo(&str, "select pg_catalog.gp_analyze_rel(%u, '%s');",
+					 relid;
+					 va_cols_str);
+
+	/*
+	 * Execute it.
+	 */
+	CdbDispatchCommand(str.data, DF_WITH_SNAPSHOT, NULL);
 }
 
 /*

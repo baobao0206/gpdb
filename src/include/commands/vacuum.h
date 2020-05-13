@@ -258,6 +258,7 @@ extern int acquire_inherited_sample_rows(Relation onerel, int elevel,
 
 /* in commands/analyzefuncs.c */
 extern Datum gp_acquire_sample_rows(PG_FUNCTION_ARGS);
+extern Datum gp_analyze_rel(PG_FUNCTION_ARGS);
 extern Oid gp_acquire_sample_rows_col_type(Oid typid);
 
 #endif   /* VACUUM_H */

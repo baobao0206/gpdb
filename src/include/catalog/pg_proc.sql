@@ -160,6 +160,7 @@
 
 -- Analyze related
  CREATE FUNCTION gp_acquire_sample_rows(oid, int4, bool) RETURNS SETOF record LANGUAGE internal VOLATILE STRICT EXECUTE ON ALL SEGMENTS AS 'gp_acquire_sample_rows' WITH (OID=6038, DESCRIPTION="Collect a random sample of rows from table" );
+ CREATE FUNCTION gp_analyze_rel(oid, text) RETURNS void LANGUAGE internal VOLATILE STRICT EXECUTE ON ALL SEGMENTS AS 'gp_analyze_rel' WITH (OID=6040, DESCRIPTION="Collect a random sample of rows from table" );
 
 -- Backoff related
  CREATE FUNCTION gp_adjust_priority(int4, int4, int4) RETURNS int4 LANGUAGE internal VOLATILE STRICT AS 'gp_adjust_priority_int' WITH (OID=5040, DESCRIPTION="change weight of all the backends for a given session id");
