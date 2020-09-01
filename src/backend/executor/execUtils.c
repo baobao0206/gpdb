@@ -2029,7 +2029,7 @@ void mppExecutorFinishup(QueryDesc *queryDesc)
 		 * mark the estate to "cancelUnfinished" and then try to do a
 		 * normal interconnect teardown).
 		 */
-		TeardownInterconnect(estate->interconnect_context, estate->cancelUnfinished, false);
+		TeardownInterconnect(estate->interconnect_context, estate->motionlayer_context, estate->cancelUnfinished, false);
 		estate->interconnect_context = NULL;
 		estate->es_interconnect_is_setup = false;
 	}
@@ -2157,7 +2157,7 @@ void mppExecutorCleanup(QueryDesc *queryDesc)
 	/* Clean up the interconnect. */
 	if (estate->es_interconnect_is_setup)
 	{
-		TeardownInterconnect(estate->interconnect_context, true /* force EOS */, true);
+		TeardownInterconnect(estate->interconnect_context, estate->motionlayer_context, true /* force EOS */, true);
 		estate->es_interconnect_is_setup = false;
 	}
 
