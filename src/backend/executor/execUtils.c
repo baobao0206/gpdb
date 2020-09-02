@@ -2155,7 +2155,7 @@ void mppExecutorCleanup(QueryDesc *queryDesc)
 		(*query_info_collect_hook)(METRICS_QUERY_CANCELING, queryDesc);
 
 	/* Clean up the interconnect. */
-	if (estate->es_interconnect_is_setup)
+	if (estate && estate->es_interconnect_is_setup)
 	{
 		TeardownInterconnect(estate->interconnect_context, estate->motionlayer_context, true /* force EOS */, true);
 		estate->es_interconnect_is_setup = false;
