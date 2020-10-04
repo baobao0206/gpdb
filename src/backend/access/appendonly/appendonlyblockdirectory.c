@@ -473,7 +473,6 @@ AppendOnlyBlockDirectory_GetEntry(
 {
 	int			segmentFileNum = AOTupleIdGet_segmentFileNum(aoTupleId);
 	int64		rowNum = AOTupleIdGet_rowNum(aoTupleId);
-	int			i;
 	Relation	blkdirRel = blockDirectory->blkdirRel;
 	Relation	blkdirIdx = blockDirectory->blkdirIdx;
 	int			numScanKeys = blockDirectory->numScanKeys;
@@ -556,16 +555,7 @@ AppendOnlyBlockDirectory_GetEntry(
 		}
 	}
 
-	for (i = 0; i < blockDirectory->totalSegfiles; i++)
-	{
-		fsInfo = blockDirectory->segmentFileInfo[i];
-
-		if (!blockDirectory->isAOCol && segmentFileNum == fsInfo->segno)
-			break;
-		else if (blockDirectory->isAOCol && segmentFileNum ==
-				 ((AOCSFileSegInfo *) fsInfo)->segno)
-			break;
-	}
+	fsInfo = blockDirectory->segmentFileInfo[segmentFileNum];
 
 	Assert(fsInfo != NULL);
 
