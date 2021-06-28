@@ -316,6 +316,17 @@ explain (costs off) select * from t_hashdist cross join (select a, count(1) as s
 -- limit
 explain (costs off) select * from t_hashdist cross join (select * from generate_series(1, 10) limit 1) x;
 
+-- CTAS on general locus into replicated table
+explain (costs off) create table t_rep as select random() from (select generate_series(1,10)) t1 distributed replicated;
+
+-- CTAS on general locus into replicated table with HAVING
+explain (costs off) create table t_rep as select i from generate_series(1,10) as i group by i having i < random() distributed replicated;
+
+-- CTAS on replicated table into replicated table
+create table rep_tbl as select t1 from generate_series(1,10) t1 distributed replicated;
+explain (costs off) create table t_rep as select random() from rep_tbl distributed replicated;
+
+drop table rep_tbl;
 reset optimizer;
 
 --
