@@ -1814,9 +1814,9 @@ cost_material(Path *path, PlannerInfo *root,
  * spilledTupleNumber
  *   - hashTableCapacity: the number of entries in the hash table locally
  *   - numGroups        : the number of groups locally
- *   - rows             : the number of input tuples globally
+ *   - rows             : the number of input tuples locally
  *
- * Estimate how many tuples are spilled globally.
+ * Estimate how many tuples are spilled locally.
  *
  * We first consider the model as randomly picking values from different groups
  * to fill into the hashtable. When the hash table is full, all the contents in
@@ -1928,7 +1928,7 @@ cost_agg(Path *path, PlannerInfo *root,
 		total_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
 		total_cost += aggcosts->finalCost * numGroups;
 		total_cost += cpu_tuple_cost * numGroups;
-		output_tuples = numGroups * planner_segment_count(NULL);
+		output_tuples = numGroups;
 	}
 	else
 	{
@@ -1962,7 +1962,7 @@ cost_agg(Path *path, PlannerInfo *root,
 				/* startup gets charged the write-cost */
 				startup_cost += seq_page_cost * (spilled_bytes / BLCKSZ);
 
-				output_tuples = numGroups * planner_segment_count(NULL);;
+				output_tuples = numGroups;
 			}
 			else
 			{
@@ -1971,7 +1971,7 @@ cost_agg(Path *path, PlannerInfo *root,
 		}
 		else
 		{
-			output_tuples = numGroups * planner_segment_count(NULL);;
+			output_tuples = numGroups;
 		}
 
 		total_cost = startup_cost;
