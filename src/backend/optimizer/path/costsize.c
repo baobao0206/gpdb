@@ -4608,13 +4608,13 @@ set_cte_size_estimates(PlannerInfo *root, RelOptInfo *rel, Plan *cteplan)
 	double		numsegments;
 	double		sub_total_rows;
 
-	if (rel->subplan->flow->locustype == CdbLocusType_Hashed ||
-		rel->subplan->flow->locustype == CdbLocusType_HashedOJ ||
-		rel->subplan->flow->locustype == CdbLocusType_Strewn)
-		numsegments = rel->subplan->flow->numsegments;
+	if (cteplan->flow->locustype == CdbLocusType_Hashed ||
+		cteplan->flow->locustype == CdbLocusType_HashedOJ ||
+		cteplan->flow->locustype == CdbLocusType_Strewn)
+		numsegments = cteplan->flow->numsegments;
 	else
 		numsegments = 1;
-	sub_total_rows = rel->subplan->plan_rows * numsegments;
+	sub_total_rows = cteplan->plan_rows * numsegments;
 
 	/* Should only be applied to base relations that are CTE references */
 	Assert(rel->relid > 0);
