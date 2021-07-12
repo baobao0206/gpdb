@@ -1291,6 +1291,7 @@ cost_subqueryscan(Path *path, PlannerInfo *root,
 		path->rows = param_info->ppi_rows;
 	else
 		path->rows = baserel->rows;
+	path->rows = clamp_row_est(path->rows / numsegments);
 
 	/*
 	 * Cost of path is cost of evaluating the subplan, plus cost of evaluating
